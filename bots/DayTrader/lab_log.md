@@ -389,3 +389,21 @@ The main controller continues under `run-main-loop.sh`.
 - Browser validation confirmed the embedded RuneScape canvas, auto-login,
   live coordinates/skills, both agent panels, workflow progress, portfolio,
   and decision stream.
+
+## Session 7 (observer information architecture + chat)
+
+- Replaced the single scrolling wall of widgets with five focused tabs:
+  Overview, Agents, Workflow, Chat, and Events.
+- Overview keeps only character state and collection progress.
+- Agents groups strategist, market signals, and operator status.
+- Workflow dedicates the full panel to execution steps and attempts.
+- Events isolates the audit stream.
+- Chat uses the observer SDK's accumulated history (up to 250 messages) and
+  includes game/system, public, private, and DayTrader's own messages.
+- Chat rows show observer timestamp, sender, and readable wrapped text, with
+  distinct styling for system and self messages.
+- An unread badge increments while another tab is active and clears when Chat
+  is opened. The chat panel remains bounded and auto-scrolls only when the
+  human is already near the bottom, so manual reading is not interrupted.
+- Browser verification confirmed the tab navigation and live chat list against
+  production messages.

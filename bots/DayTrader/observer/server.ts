@@ -89,6 +89,29 @@ function recentEvents(): unknown[] {
     });
 }
 
+const chatSeenAt = new Map<string, number>();
+
+function readableChat(): object[] {
+    const messages = sdk.getChat({
+        limit: 250,
+        types: [0, 1, 2, 3, 6, 7],
+        includeSelf: true,
+    });
+    const now = Date.now();
+    return messages.map(message => {
+        const key = `${message.observationId ?? message.tick}:${message.type}:${message.sender}:${message.text}`;
+        if (!chatSeenAt.has(key)) chatSeenAt.set(key, now);
+        return {
+            type: message.type,
+            sender: message.sender || (message.type === 0 ? 'Game' : 'Unknown'),
+            text: message.text,
+            tick: message.tick,
+            fromSelf: message.fromSelf,
+            seenAt: chatSeenAt.get(key),
+        };
+    });
+}
+
 function statusPayload(): object {
     const state = sdk.getState();
     const strategy = readJson('strategy.json') as any;
@@ -183,6 +206,7 @@ function statusPayload(): object {
                       .map(([name, value]) => ({ name, ...(value as object) }))
                 : [],
         },
+        chat: readableChat(),
         events: recentEvents(),
     };
 }
@@ -202,7 +226,10 @@ header{height:56px;display:flex;align-items:center;justify-content:space-between
 main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1.7fr) minmax(390px,1fr);gap:1px;background:var(--line)}
 .game-shell{position:relative;background:#000;min-width:0}.game-shell iframe{border:0;width:100%;height:100%;display:block;background:#000}
 .game-label{position:absolute;left:12px;top:12px;z-index:2;padding:6px 9px;border:1px solid #ffffff22;border-radius:6px;background:#050707cc;color:#c9d2cd;font-size:11px;pointer-events:none}
-.dash{overflow:auto;background:var(--bg);padding:12px;display:grid;gap:10px;align-content:start}
+.dash{overflow:hidden;background:var(--bg);display:grid;grid-template-rows:auto 1fr;min-height:0}
+.tabs{display:flex;gap:5px;padding:10px;border-bottom:1px solid var(--line);background:#0c1112;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}
+.tab{appearance:none;border:1px solid var(--line);background:#101617;color:var(--muted);border-radius:7px;padding:7px 10px;font:600 11px/1 inherit;white-space:nowrap;cursor:pointer}.tab:hover{color:var(--text);border-color:#3b4b4c}.tab.active{background:#252211;border-color:#6b5727;color:#f2d07e}.badge{display:inline-block;min-width:17px;margin-left:4px;padding:1px 5px;border-radius:10px;background:#263233;color:#dce5e1;font-size:9px;text-align:center}
+.panels{overflow:auto;padding:12px;min-height:0}.panel-page{display:none;gap:10px;align-content:start}.panel-page.active{display:grid}.panel-title{margin:2px 2px 0;font-size:18px}.panel-subtitle{margin:-4px 2px 4px;color:var(--muted);font-size:11px}
 .card{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:0 8px 22px #0003}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin:0 0 10px}.summary{font-size:14px;line-height:1.45}.muted{color:var(--muted)}.small{font-size:11px}
 .goal{font-size:17px;font-weight:700;margin-bottom:4px}.tag{display:inline-block;padding:3px 7px;margin:2px 3px 2px 0;border:1px solid var(--line);border-radius:999px;font-size:10px;color:#b9c5c0;background:#0b1011}
@@ -211,8 +238,11 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
 .workflow-head{display:flex;justify-content:space-between;gap:8px}.progress{height:5px;background:#070a0b;border-radius:5px;overflow:hidden;margin:8px 0}.progress>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--green))}
 .step.active{color:#fff}.step.done{color:var(--green)}.step.future{color:var(--muted)}.step-code{font-family:ui-monospace,monospace;font-size:10px;color:#9bb0a8;margin-top:3px}
 .event{font-size:11px}.event time{color:var(--muted);margin-right:6px}.event .type{color:var(--gold);font-weight:650}.event pre{white-space:pre-wrap;margin:4px 0 0;color:#acb8b3;font-family:inherit}
+.chat-log{display:flex;flex-direction:column;gap:2px;max-height:calc(100vh - 205px);overflow:auto;scrollbar-color:#344443 transparent}.chat-line{display:grid;grid-template-columns:68px minmax(80px,auto) 1fr;gap:8px;padding:7px 8px;border-radius:6px;font-size:12px;line-height:1.35}.chat-line:hover{background:#ffffff08}.chat-time{color:#62716b;font-variant-numeric:tabular-nums}.chat-sender{color:#d8b966;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-text{color:#dfe6e2;overflow-wrap:anywhere}.chat-line.self .chat-sender{color:var(--green)}.chat-line.system{background:#0b1011}.chat-line.system .chat-sender{color:#85948e}.chat-line.system .chat-text{color:#a9b5b0;font-style:italic}
+.section-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.wide{grid-column:1/-1}
 .warning{border-color:#674444;background:#211516}.good{color:var(--green)}.bad{color:var(--red)}
-@media(max-width:1050px){main{grid-template-columns:1fr;grid-template-rows:58vh auto;height:auto}.game-shell{height:58vh}.dash{overflow:visible}.grid2{grid-template-columns:1fr 1fr}}
+@media(max-width:1200px){.section-grid{grid-template-columns:1fr}}
+@media(max-width:1050px){main{grid-template-columns:1fr;grid-template-rows:58vh minmax(600px,auto);height:auto}.game-shell{height:58vh}.dash{min-height:600px}.panels{overflow:visible}.grid2{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
@@ -220,19 +250,56 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
 <main>
   <section class="game-shell"><div class="game-label">LIVE GAME CLIENT · visual session</div><iframe src="${gameUrl.toString()}" allow="autoplay; fullscreen" title="DayTrader RuneScape client"></iframe></section>
   <aside class="dash">
-    <div class="card" id="player"></div>
-    <div class="card" id="strategist"></div>
-    <div class="card" id="signals"></div>
-    <div class="card" id="operator"></div>
-    <div class="card" id="workflow"></div>
-    <div class="card" id="collection"></div>
-    <div class="card" id="events"></div>
+    <nav class="tabs" aria-label="Observer sections">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="agents">Agents</button>
+      <button class="tab" data-tab="workflow">Workflow</button>
+      <button class="tab" data-tab="chat">Chat <span class="badge" id="chat-count">0</span></button>
+      <button class="tab" data-tab="events">Events</button>
+    </nav>
+    <div class="panels">
+      <section class="panel-page active" data-panel="overview">
+        <h1 class="panel-title">Live overview</h1>
+        <p class="panel-subtitle">Character state and collection coverage</p>
+        <div class="section-grid"><div class="card" id="player"></div><div class="card" id="collection"></div></div>
+      </section>
+      <section class="panel-page" data-panel="agents">
+        <h1 class="panel-title">AI control room</h1>
+        <p class="panel-subtitle">Safe decision summaries and explicit rationale—not private chain-of-thought</p>
+        <div class="card" id="strategist"></div>
+        <div class="card" id="signals"></div>
+        <div class="card" id="operator"></div>
+      </section>
+      <section class="panel-page" data-panel="workflow">
+        <h1 class="panel-title">Execution</h1>
+        <p class="panel-subtitle">Current declarative workflow and progress</p>
+        <div class="card" id="workflow"></div>
+      </section>
+      <section class="panel-page" data-panel="chat">
+        <h1 class="panel-title">Game chat</h1>
+        <p class="panel-subtitle">Accumulated public, private, self, and game messages</p>
+        <div class="card"><div class="chat-log" id="chat"></div></div>
+      </section>
+      <section class="panel-page" data-panel="events">
+        <h1 class="panel-title">Audit stream</h1>
+        <p class="panel-subtitle">Agent decisions, workflow repairs, actions, and trade outcomes</p>
+        <div class="card" id="events"></div>
+      </section>
+    </div>
   </aside>
 </main>
 <script>
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ago=t=>!t?'—':Math.max(0,Math.round((Date.now()-t)/1000))+'s ago';
 const compact=v=>JSON.stringify(v??{}).replace(/[{}"]/g,'').replace(/,/g,', ');
+let activeTab='overview',lastChatKey='',chatInitialized=false,unreadChat=0;
+function showTab(name){
+ activeTab=name;
+ document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));
+ document.querySelectorAll('.panel-page').forEach(x=>x.classList.toggle('active',x.dataset.panel===name));
+ if(name==='chat'){unreadChat=0;document.querySelector('#chat-count').textContent='0';const c=document.querySelector('#chat');requestAnimationFrame(()=>c.scrollTop=c.scrollHeight)}
+}
+document.querySelectorAll('.tab').forEach(x=>x.addEventListener('click',()=>showTab(x.dataset.tab)));
 function render(d){
  const ok=d.observer.connected&&d.observer.authenticated&&d.game;
  document.querySelector('#conn').innerHTML='<i class="dot '+(ok?'ok':'')+'"></i>'+(ok?'live':'waiting');
@@ -247,6 +314,12 @@ function render(d){
  const w=o.workflow; let wh='<h2>Execution workflow</h2>';
  if(w){const pct=Math.round(100*Math.min(w.stepIndex,w.steps.length)/Math.max(1,w.steps.length));wh+='<div class="workflow-head"><b>'+esc(w.name)+' v'+esc(w.version)+'</b><span class="small muted">step '+(w.stepIndex+1)+'/'+w.steps.length+' · attempt '+w.stepAttempts+'</span></div><div class="small muted">'+esc(w.goal)+'</div><div class="progress"><i style="width:'+pct+'%"></i></div>'+w.steps.map((x,i)=>'<div class="step '+(i<w.stepIndex?'done':i===w.stepIndex?'active':'future')+'"><b>'+(i<w.stepIndex?'✓ ':i===w.stepIndex?'▶ ':'○ ')+esc(x.description)+'</b><div class="step-code">'+esc(compact(x.directive))+' → '+esc(compact(x.completion))+'</div></div>').join('')}else wh+='<div class="muted small">No active workflow.</div>';document.querySelector('#workflow').innerHTML=wh;
  document.querySelector('#collection').innerHTML='<h2>Collection portfolio</h2><div class="grid2"><div class="metric"><b>'+esc(d.collection.observedCount)+'</b><span>items ever observed</span></div><div class="metric"><b>33</b><span>portfolio targets</span></div></div><div style="margin-top:8px">'+(d.collection.recentlyObserved||[]).map(x=>'<span class="tag">'+esc(x.name)+' ×'+esc(x.maxHeld)+'</span>').join('')+'</div>';
+ const chat=d.chat||[],latest=chat.at(-1),latestKey=latest?(latest.tick+':'+latest.type+':'+latest.sender+':'+latest.text):'';
+ if(chatInitialized&&latestKey&&latestKey!==lastChatKey&&activeTab!=='chat'){const previousIndex=chat.findIndex(x=>(x.tick+':'+x.type+':'+x.sender+':'+x.text)===lastChatKey);unreadChat+=previousIndex>=0?chat.length-previousIndex-1:1}
+ if(latestKey)lastChatKey=latestKey;chatInitialized=true;document.querySelector('#chat-count').textContent=String(unreadChat);
+ const chatBox=document.querySelector('#chat'),nearBottom=chatBox.scrollHeight-chatBox.scrollTop-chatBox.clientHeight<80;
+ chatBox.innerHTML=chat.length?chat.map(x=>'<div class="chat-line '+(x.fromSelf?'self ':'')+(x.type===0?'system':'')+'"><span class="chat-time">'+new Date(x.seenAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})+'</span><span class="chat-sender">'+esc(x.sender)+'</span><span class="chat-text">'+esc(x.text)+'</span></div>').join(''):'<div class="muted small">No chat observed in this dashboard session yet.</div>';
+ if(activeTab==='chat'&&nearBottom)requestAnimationFrame(()=>chatBox.scrollTop=chatBox.scrollHeight);
  const visible=(d.events||[]).filter(e=>['ai_plan','operator_plan','operator_step','operator_stall','operator_escalation','trade_result','ad_sent','skill_action','error','ai_error'].includes(e.type)).slice(-24).reverse();
  document.querySelector('#events').innerHTML='<h2>Decision & action stream</h2>'+visible.map(e=>{const copy={...e};delete copy.ts;delete copy.type;const text=copy.summary||copy.message||copy.question||compact(copy);return '<div class="event"><time>'+new Date(e.ts).toLocaleTimeString()+'</time><span class="type">'+esc(e.type)+'</span><pre>'+esc(text)+'</pre></div>'}).join('');
 }
