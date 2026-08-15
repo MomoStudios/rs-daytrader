@@ -39,6 +39,12 @@ export interface MarketSignal {
     implication: string;
 }
 
+export interface MaterialReservation {
+    item: string;
+    count: number;
+    purpose: string;
+}
+
 export type StrategicAction =
     | { type: 'train'; activity: ProgressionActivity }
     | { type: 'travel'; destination: Destination }
@@ -74,6 +80,7 @@ export type ChatAction =
 export interface AiDecision {
     summary: string;
     marketSignals: MarketSignal[];
+    reservations: MaterialReservation[];
     goal: StrategicGoal;
     chatActions: ChatAction[];
     nextAction: StrategicAction;
@@ -194,11 +201,22 @@ export function parseAiDecision(value: unknown): AiDecision {
     if (!isRecord(value)) throw new Error('AI decision must be an object');
     if (!Array.isArray(value.marketSignals)) throw new Error('marketSignals must be an array');
     if (value.marketSignals.length > 6) throw new Error('marketSignals may contain at most 6 entries');
+    if (!Array.isArray(value.reservations) || value.reservations.length > 10) {
+        throw new Error('reservations must contain at most 10 entries');
+    }
     if (!Array.isArray(value.chatActions)) throw new Error('chatActions must be an array');
     if (value.chatActions.length > 3) throw new Error('chatActions may contain at most 3 entries');
     return {
         summary: boundedString(value.summary, 'summary', 300),
         marketSignals: value.marketSignals.map(validateMarketSignal),
+        reservations: value.reservations.map((entry, index): MaterialReservation => {
+            if (!isRecord(entry)) throw new Error(`reservations[${index}] must be an object`);
+            return {
+                item: boundedString(entry.item, `reservations[${index}].item`, 80),
+                count: boundedNumber(entry.count, `reservations[${index}].count`, 1, 100_000),
+                purpose: boundedString(entry.purpose, `reservations[${index}].purpose`, 180),
+            };
+        }),
         goal: validateGoal(value.goal),
         chatActions: value.chatActions.map(validateChatAction),
         nextAction: validateAction(value.nextAction),

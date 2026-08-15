@@ -43,6 +43,7 @@ export type OperatorDirective =
     | { type: 'shop_open'; npc: string }
     | { type: 'shop_close' }
     | { type: 'shop_buy'; item: string; amount: number }
+    | { type: 'smith_product'; product: string; bar: string }
     | { type: 'equip_item'; item: string }
     | { type: 'set_combat_style'; skill: 'Attack' | 'Strength' | 'Defence' }
     | { type: 'attack_npc'; target: string }
@@ -122,6 +123,7 @@ const DIRECTIVE_TYPES = new Set([
     'shop_open',
     'shop_close',
     'shop_buy',
+    'smith_product',
     'equip_item',
     'set_combat_style',
     'attack_npc',
@@ -265,6 +267,12 @@ function directive(value: unknown): OperatorDirective {
             };
         case 'shop_open':
             return { type: 'shop_open', npc: string(data.npc, 'directive.npc', 80) };
+        case 'smith_product':
+            return {
+                type: 'smith_product',
+                product: string(data.product, 'directive.product', 80),
+                bar: string(data.bar, 'directive.bar', 80),
+            };
         case 'equip_item':
             return { type: 'equip_item', item: string(data.item, 'directive.item', 80) };
         case 'set_combat_style':

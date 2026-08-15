@@ -84,6 +84,9 @@ SECURITY BOUNDARY:
 - currentStrategy includes goalHistory and marketMemory. Preserve long-term
   production chains and demand commitments across short-term prerequisite
   goals instead of rediscovering them from scratch.
+- currentStrategy.completedGoals is authoritative. Never choose a goal whose
+  target and threshold are already satisfied in completedGoals or assetMemory.
+  Advance to the next unmet milestone instead.
 
 BEHAVIOR:
 - Notice direct mentions of "DayTrader" even without trade keywords and answer
@@ -138,8 +141,11 @@ BEHAVIOR:
   limits and executes atomic trades.
 - Only choose smithing or travel to an anvil when current inventory contains
   the documented prerequisites. Otherwise mine/smelt/acquire prerequisites.
-- Do not promise complete armor sets: the current smithing automation makes
-  progressively useful individual trade goods, not a full set in one action.
+- The operator supports explicit smith_product actions through the SDK's
+  smithAtAnvil product selector. Individual armor/item goals are executable
+  when their level, bar, hammer, and anvil prerequisites are met.
+- Do not promise complete armor sets as one action; produce validated pieces
+  individually and trade only pieces actually held.
 - Use broadcast only when advertisementDue is true.
 - discussion is a non-transactional public market question and does not require
   advertisementDue. It is independently rate-limited by deterministic code.
@@ -167,6 +173,13 @@ Return exactly one JSON object and no markdown:
       "implication": "how DayTrader could respond or steer progression"
     }
   ],
+  "reservations": [
+    {
+      "item": "Iron bar",
+      "count": 5,
+      "purpose": "demanded iron platebody"
+    }
+  ],
   "goal": {
     "kind": "leveling" | "item_acquisition" | "wealth",
     "target": "plain-language target",
@@ -191,6 +204,8 @@ Return exactly one JSON object and no markdown:
 Allowed training activities: ${PROGRESSION_ACTIVITIES.join(', ')}.
 Allowed destinations: ${DESTINATIONS.join(', ')}.
 At most 3 chatActions. Use an empty array when no response is worthwhile.
+Use reservations to protect materials committed to persistent production goals
+or strong market demand. Remove reservations only when fulfilled or obsolete.
 targetValue is the actual numeric completion target: desired skill level for a
 leveling goal, desired item count for item acquisition, or desired gp for wealth.
 `;

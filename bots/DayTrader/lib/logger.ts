@@ -32,6 +32,7 @@ export type LogEventType =
     | 'development_review'
     | 'development_error'
     | 'character_trace'
+    | 'goal_completed'
     | 'error'
     | 'note';
 

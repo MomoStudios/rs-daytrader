@@ -3,7 +3,13 @@ import { mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { DEFAULT_AI_MODEL, DEFAULT_AI_REASONING_EFFORT, operatorModel } from './aiConfig';
-import type { AiDecision, MarketSignal, StrategicAction, StrategicGoal } from './aiDecision';
+import type {
+    AiDecision,
+    MarketSignal,
+    MaterialReservation,
+    StrategicAction,
+    StrategicGoal,
+} from './aiDecision';
 import type { CollectionStatus } from './collectionPortfolio';
 import {
     parseOperatorDecisionText,
@@ -60,6 +66,7 @@ export interface OperatorPlanningRequest {
     executionKnowledge: ExecutionKnowledge[];
     developmentKnowledge: ManagedKnowledge[];
     assetMemory: AssetMemory;
+    materialReservations: MaterialReservation[];
 }
 
 export interface OperatorDiagnosisRequest extends OperatorPlanningRequest {
@@ -102,6 +109,9 @@ ROLE:
   contents. Use combinedHoldings for prerequisite planning. If a required item
   is remembered in the bank, plan a bank withdrawal rather than declaring the
   item unavailable.
+- materialReservations are hard account-wide floors for persistent production
+  commitments. Do not consume a reserved item for another workflow if doing so
+  would reduce combined holdings below the reserved count.
 - A reusable workflow may have 1-30 bounded steps. Repetition is represented by
   repeatUntilComplete + a measurable completion condition + maxAttempts.
 - On diagnosis, distinguish normal resource respawn/waiting from pathing,
@@ -126,6 +136,7 @@ ALLOWED DIRECTIVES:
 - pickup {item}; use_item_on_loc {item,location}
 - bank_open; bank_close; bank_deposit/bank_withdraw {item,amount}
 - shop_open {npc}; shop_close; shop_buy {item,amount}
+- smith_product {product,bar} (uses the SDK smithing product selector)
 - equip_item {item}; set_combat_style {skill: Attack|Strength|Defence}
 - attack_npc {target}; wait {ticks 1-20}
 
@@ -302,5 +313,6 @@ export function operatorRequestFromStrategist(
             bankObservationSource: world.bank.open ? 'live_open_bank' : 'never_observed',
             combinedHoldings: [...world.inventory, ...world.equipment, ...world.bank.items],
         },
+        materialReservations: decision.reservations ?? [],
     };
 }

@@ -7,6 +7,7 @@ describe('operator execution knowledge retrieval', () => {
         const decision: AiDecision = {
             summary: 'Acquire runite ore.',
             marketSignals: [],
+            reservations: [],
             goal: {
                 kind: 'item_acquisition',
                 target: 'Maintain runite ore in stock',

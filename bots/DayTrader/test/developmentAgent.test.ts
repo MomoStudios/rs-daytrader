@@ -99,6 +99,29 @@ describe('development agent boundary', () => {
         ).toThrow('directive.type is invalid');
     });
 
+    test('normalizes common model health and severity synonyms', () => {
+        const review = parseDevelopmentReview({
+            summary: 'System is improving.',
+            health: 'improving',
+            findings: [
+                {
+                    severity: 'critical',
+                    kind: 'failure',
+                    title: 'Important issue',
+                    evidenceRefs: [],
+                    diagnosis: 'A real failure occurred.',
+                    recommendation: 'Fix it.',
+                    target: 'operator',
+                },
+            ],
+            knowledgeUpdates: [],
+            workflowProposals: [],
+            noActionReason: null,
+        });
+        expect(review.health).toBe('healthy');
+        expect(review.findings[0]?.severity).toBe('high');
+    });
+
     test('builds a bounded multi-hour trace without raw chat text', () => {
         const trace = buildGameTrace(4, 200);
         expect(trace.timeline.length).toBeLessThanOrEqual(700);

@@ -35,7 +35,12 @@ import { log } from './lib/logger';
 import { assessMessage } from './lib/scamGuard';
 import { normalizeOutgoingMessage, validateConversationalReply } from './lib/chatSafety';
 import { executeFallbackAction, executeStrategicAction, type SkillResult } from './lib/skillLibrary';
-import { loadStrategy, recordActionResult, recordDecision } from './lib/strategyStore';
+import {
+    loadStrategy,
+    recordActionResult,
+    recordDecision,
+    recordGoalCompletion,
+} from './lib/strategyStore';
 import { updateCollectionStatus } from './lib/collectionPortfolio';
 import { shouldRequestAiPlan } from './lib/planningPolicy';
 import { OperatorCoordinator } from './lib/operatorCoordinator';
@@ -51,6 +56,7 @@ import {
     activeHumanGuidance,
     markHumanGuidanceApplied,
     pendingHumanGuidance,
+    resolveHumanGuidance,
 } from './lib/humanGuidance';
 import type { OperatorDecision } from './lib/operatorSchema';
 import {
@@ -59,6 +65,10 @@ import {
 } from './lib/runtimeScheduler';
 import { activeDevelopmentKnowledge } from './lib/developmentStore';
 import { updateAssetMemory } from './lib/assetMemory';
+import {
+    evaluateGoalCompletion,
+    guidanceIdsSatisfiedByGoal,
+} from './lib/goalCompletion';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -111,6 +121,7 @@ await runScript(async ({ bot, sdk }) => {
     }
 
     log('note', { msg: 'DayTrader hybrid AI/automation loop starting' });
+    reconcileCompletedGoalHistory();
     // A fresh SDK connection may expose retained chat history as "new".
     // Establish a cursor without replaying old negotiations after restarts.
     sdk.getNewChat();
@@ -196,7 +207,7 @@ await runScript(async ({ bot, sdk }) => {
         if (operatorAvailable && loadOperatorState().pendingEscalation) {
             // Planning runs in the background; keep the action lane quiet until
             // the strategist answers the operator escalation.
-            await sdk.waitForTicks(1);
+            await sdk.waitForTicks(1).catch(() => undefined);
             continue;
         }
 
@@ -213,7 +224,7 @@ await runScript(async ({ bot, sdk }) => {
         if (operatorResult) {
             result = operatorResult;
         } else if (planningPromise) {
-            await sdk.waitForTicks(1);
+            await sdk.waitForTicks(1).catch(() => undefined);
             continue;
         } else if (activeAction) {
             try {
@@ -233,6 +244,18 @@ await runScript(async ({ bot, sdk }) => {
         const postActionState = sdk.getState();
         if (postActionState) updateAssetMemory(postActionState);
         if (!result.success) await sdk.waitForTicks(1).catch(() => undefined);
+        if (
+            usedOperator &&
+            !loadOperatorState().workflow &&
+            !loadOperatorState().pendingEscalation
+        ) {
+            // A workflow just completed. Replan immediately against the new
+            // holdings/levels instead of leaving the old strategic goal on
+            // screen until the periodic interval.
+            pendingChatForAi = true;
+            lastAiAttemptAt = 0;
+            recordCurrentGoalCompletionIfSatisfied();
+        }
 
         // A failed skill usually means the goal needs a prerequisite or a
         // different location. Replan promptly rather than repeating it.
@@ -306,6 +329,32 @@ await runScript(async ({ bot, sdk }) => {
                 const observation = buildWorldObservation();
                 const guidanceIds = observation.humanGuidance.map(instruction => instruction.id);
                 const decision = await brain.decide(observation);
+                const currentWorld = sdk.getState();
+                if (!currentWorld) throw new Error('Cannot validate strategic goal without world state');
+                const completion = evaluateGoalCompletion(
+                    decision.goal,
+                    updateAssetMemory(currentWorld),
+                    currentWorld.skills
+                );
+                if (completion.complete) {
+                    recordGoalCompletion(decision.goal, completion.evidence);
+                    const resolvedGuidanceIds = guidanceIdsSatisfiedByGoal(
+                        observation.humanGuidance,
+                        decision.goal
+                    );
+                    resolveHumanGuidance(
+                        resolvedGuidanceIds,
+                        `Completed: ${completion.evidence}`
+                    );
+                    log('goal_completed', {
+                        goal: decision.goal,
+                        evidence: completion.evidence,
+                        resolvedGuidanceIds,
+                    });
+                    pendingChatForAi = true;
+                    lastAiAttemptAt = 0;
+                    return;
+                }
                 let operatorDecision: OperatorDecision | null = null;
                 let operatorRequest: OperatorPlanningRequest | null = null;
                 if (operatorAvailable) {
@@ -389,6 +438,51 @@ await runScript(async ({ bot, sdk }) => {
             .catch(() => undefined);
     }
 
+    function recordCurrentGoalCompletionIfSatisfied(): void {
+        const world = sdk.getState();
+        const goal = loadStrategy().currentGoal;
+        if (!world || !goal) return;
+        const completion = evaluateGoalCompletion(
+            goal,
+            updateAssetMemory(world),
+            world.skills
+        );
+        if (!completion.complete) return;
+        recordGoalCompletion(goal, completion.evidence);
+        const resolvedGuidanceIds = guidanceIdsSatisfiedByGoal(
+            activeHumanGuidance(),
+            goal
+        );
+        resolveHumanGuidance(
+            resolvedGuidanceIds,
+            `Completed: ${completion.evidence}`
+        );
+        log('goal_completed', {
+            goal,
+            evidence: completion.evidence,
+            resolvedGuidanceIds,
+        });
+    }
+
+    function reconcileCompletedGoalHistory(): void {
+        const world = sdk.getState();
+        if (!world) return;
+        const assets = updateAssetMemory(world);
+        for (const entry of loadStrategy().goalHistory.slice(-30)) {
+            const completion = evaluateGoalCompletion(entry.goal, assets, world.skills);
+            if (!completion.complete) continue;
+            recordGoalCompletion(entry.goal, completion.evidence);
+            const resolvedGuidanceIds = guidanceIdsSatisfiedByGoal(
+                activeHumanGuidance(),
+                entry.goal
+            );
+            resolveHumanGuidance(
+                resolvedGuidanceIds,
+                `Completed: ${completion.evidence}`
+            );
+        }
+    }
+
     function appendChatObservations(messages: GameMessage[]): void {
         for (const message of messages) {
             const assessment = assessMessage(message.text);
@@ -459,6 +553,8 @@ await runScript(async ({ bot, sdk }) => {
                 marketMemory: [...loadStrategy().marketMemory]
                     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
                     .slice(0, 30),
+                completedGoals: loadStrategy().completedGoals.slice(-30),
+                materialReservations: loadStrategy().materialReservations,
                 activeHumanGuidance: activeHumanGuidance(),
             },
             operatorStatus: {
@@ -572,6 +668,7 @@ await runScript(async ({ bot, sdk }) => {
         const world = sdk.getState();
         if (!world) throw new Error('Cannot build operator request without world state');
         request.assetMemory = updateAssetMemory(world);
+        request.materialReservations = decision.reservations ?? [];
         return request;
     }
 

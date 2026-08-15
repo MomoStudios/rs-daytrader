@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import type { AiDecision, StrategicGoal } from './aiDecision';
 import type { MarketSignal } from './aiDecision';
+import type { MaterialReservation } from './aiDecision';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -19,6 +20,12 @@ export interface StrategyState {
         at: number;
     }>;
     marketMemory: Array<MarketSignal & { firstSeenAt: number; lastSeenAt: number; observations: number }>;
+    completedGoals: Array<{
+        goal: StrategicGoal;
+        completedAt: number;
+        evidence: string;
+    }>;
+    materialReservations: MaterialReservation[];
     recentActionResults: Array<{
         at: number;
         action: string;
@@ -34,6 +41,8 @@ function defaultState(): StrategyState {
         lastPlannedAt: 0,
         goalHistory: [],
         marketMemory: [],
+        completedGoals: [],
+        materialReservations: [],
         recentActionResults: [],
     };
 }
@@ -53,6 +62,7 @@ export function loadStrategy(): StrategyState {
                   ...parsed.lastDecision,
                   marketSignals: parsed.lastDecision.marketSignals ?? [],
                   chatActions: parsed.lastDecision.chatActions ?? [],
+                  reservations: parsed.lastDecision.reservations ?? [],
               }
             : null;
         state = { ...defaultState(), ...parsed, lastDecision };
@@ -74,6 +84,7 @@ export function recordDecision(decision: AiDecision): void {
     const current = loadStrategy();
     current.currentGoal = decision.goal;
     current.lastDecision = decision;
+    current.materialReservations = decision.reservations ?? [];
     current.lastPlannedAt = Date.now();
     const previousGoal = current.goalHistory.at(-1)?.goal;
     if (
@@ -126,6 +137,23 @@ export function recordActionResult(action: string, success: boolean, message: st
     current.recentActionResults.push({ at: Date.now(), action, success, message });
     if (current.recentActionResults.length > 20) {
         current.recentActionResults.splice(0, current.recentActionResults.length - 20);
+    }
+    persist();
+}
+
+export function recordGoalCompletion(goal: StrategicGoal, evidence: string): void {
+    const current = loadStrategy();
+    const duplicate = current.completedGoals.some(
+        entry =>
+            entry.goal.kind === goal.kind &&
+            entry.goal.target.toLowerCase() === goal.target.toLowerCase() &&
+            entry.goal.targetValue === goal.targetValue
+    );
+    if (!duplicate) {
+        current.completedGoals.push({ goal, completedAt: Date.now(), evidence });
+        if (current.completedGoals.length > 100) {
+            current.completedGoals.splice(0, current.completedGoals.length - 100);
+        }
     }
     persist();
 }

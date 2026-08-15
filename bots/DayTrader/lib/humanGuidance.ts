@@ -96,3 +96,16 @@ export function markHumanGuidanceApplied(ids: string[], summary: string): void {
     }
     save(value);
 }
+
+export function resolveHumanGuidance(ids: string[], summary: string): void {
+    if (ids.length === 0) return;
+    const value = load();
+    const selected = new Set(ids);
+    for (const instruction of value.instructions) {
+        if (!selected.has(instruction.id) || instruction.status === 'resolved') continue;
+        instruction.status = 'resolved';
+        instruction.appliedAt ??= Date.now();
+        instruction.appliedSummary = summary;
+    }
+    save(value);
+}

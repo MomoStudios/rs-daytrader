@@ -172,4 +172,32 @@ describe('operator decision boundary', () => {
         );
         expect(parsed.workflow?.name).toBe('train-mining-to-85');
     });
+
+    test('allows explicit smithing product selection', () => {
+        const parsed = parseOperatorDecision({
+            ...valid,
+            workflow: {
+                ...valid.workflow,
+                steps: [
+                    {
+                        id: 'smith-helm',
+                        description: 'Smith one bronze med helm.',
+                        directive: {
+                            type: 'smith_product',
+                            product: 'med helm',
+                            bar: 'Bronze bar',
+                        },
+                        completion: {
+                            type: 'inventory',
+                            item: 'Bronze med helm',
+                            count: 1,
+                        },
+                        repeatUntilComplete: true,
+                        maxAttempts: 5,
+                    },
+                ],
+            },
+        });
+        expect(parsed.workflow?.steps[0]?.directive.type).toBe('smith_product');
+    });
 });

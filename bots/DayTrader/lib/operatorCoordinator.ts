@@ -12,6 +12,7 @@ import {
 import { assessStall, evaluateProgress, snapshotProgress } from './operatorWatchdog';
 import { log } from './logger';
 import { storeReusableWorkflow } from './workflowStore';
+import { reservationViolations } from './reservationPolicy';
 
 export class OperatorCoordinator {
     private brain = new DayTraderOperatorBrain();
@@ -57,6 +58,16 @@ export class OperatorCoordinator {
         request?: OperatorPlanningRequest
     ): void {
         if (request) this.request = request;
+        if (decision.workflow && request) {
+            const violations = reservationViolations(
+                decision.workflow,
+                request.materialReservations,
+                request.assetMemory
+            );
+            if (violations.length > 0) {
+                throw new Error(`Workflow violates material reservations: ${violations.join('; ')}`);
+            }
+        }
         const baseline = snapshotProgress(ctx.sdk.getState());
         installOperatorDecision(decision, baseline);
         if (decision.workflow) storeReusableWorkflow(decision.workflow);

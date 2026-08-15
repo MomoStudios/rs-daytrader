@@ -88,7 +88,16 @@ export function parseDevelopmentResearchPlanText(value: string): DevelopmentRese
 
 export function parseDevelopmentReview(value: unknown): DevelopmentReview {
     const data = record(value, 'development review');
-    if (!['healthy', 'degraded', 'blocked'].includes(String(data.health))) {
+    const healthValue = String(data.health).toLowerCase();
+    const health =
+        ['healthy', 'good', 'ok', 'stable', 'improving'].includes(healthValue)
+            ? 'healthy'
+            : ['degraded', 'warning', 'mixed'].includes(healthValue)
+              ? 'degraded'
+              : ['blocked', 'critical', 'failing'].includes(healthValue)
+                ? 'blocked'
+                : null;
+    if (!health) {
         throw new Error('health is invalid');
     }
     if (!Array.isArray(data.findings) || data.findings.length > 20) {
@@ -103,7 +112,16 @@ export function parseDevelopmentReview(value: unknown): DevelopmentReview {
 
     const findings = data.findings.map((value, index): DevelopmentFinding => {
         const finding = record(value, `findings[${index}]`);
-        if (!['low', 'medium', 'high'].includes(String(finding.severity))) {
+        const severityValue = String(finding.severity).toLowerCase();
+        const severity =
+            ['low', 'info', 'informational', 'minor'].includes(severityValue)
+                ? 'low'
+                : ['medium', 'warning', 'moderate'].includes(severityValue)
+                  ? 'medium'
+                  : ['high', 'critical', 'major'].includes(severityValue)
+                    ? 'high'
+                    : null;
+        if (!severity) {
             throw new Error('finding.severity is invalid');
         }
         if (!['failure', 'upgrade', 'policy_gap', 'knowledge_gap', 'success'].includes(String(finding.kind))) {
@@ -113,7 +131,7 @@ export function parseDevelopmentReview(value: unknown): DevelopmentReview {
             throw new Error('finding.target is invalid');
         }
         return {
-            severity: finding.severity as DevelopmentFinding['severity'],
+            severity,
             kind: finding.kind as DevelopmentFinding['kind'],
             title: text(finding.title, 'finding.title', 160),
             evidenceRefs: strings(finding.evidenceRefs, 'finding.evidenceRefs', 12),
@@ -153,7 +171,7 @@ export function parseDevelopmentReview(value: unknown): DevelopmentReview {
 
     return {
         summary: text(data.summary, 'summary', 800),
-        health: data.health as DevelopmentReview['health'],
+        health,
         findings,
         knowledgeUpdates,
         workflowProposals,

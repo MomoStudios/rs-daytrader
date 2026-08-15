@@ -111,6 +111,13 @@ export async function executeOperatorDirective(
             const action = await bot.buyFromShop(exactPattern(directive.item), directive.amount);
             return result('operator:shop_buy', action.success, action.message);
         }
+        case 'smith_product': {
+            const action = await bot.smithAtAnvil(directive.product, {
+                barPattern: exactPattern(directive.bar),
+                timeout: 15_000,
+            });
+            return result('operator:smith_product', action.success, action.message);
+        }
         case 'equip_item': {
             const action = await bot.equipItem(exactPattern(directive.item));
             return result('operator:equip_item', action.success, action.message);

@@ -574,3 +574,54 @@ The main controller continues under `run-main-loop.sh`.
 - Live verification completed 10 Bronze bars using banked tin, then advanced
   from the remembered bronze-production objective toward Smithing 15 and the
   retained iron-platebody demand.
+
+## Session 12 (goal completion + reservations)
+
+### Stale bronze-goal root cause
+- The operator completed a ten-bar smelting workflow, but the strategist goal
+  remained visible because a controller tick wait timed out at the completion
+  boundary and no immediate completion replan was guaranteed.
+- The active human guidance `smelt the bronze` was also marked applied but not
+  resolved, so periodic plans kept treating it as binding.
+
+### Deterministic completion gate
+- Every new strategist proposal is checked before operator planning against
+  combined inventory, equipment, last-known bank holdings, and current skills.
+- Item names are plural-normalized and matched to account-wide holdings;
+  leveling and wealth thresholds are checked directly.
+- Already-complete goals are rejected, recorded in `completedGoals`, and force
+  immediate replanning.
+- Operator workflow completion now checks the previous current goal immediately
+  and triggers replanning without waiting for the two-minute interval.
+- Startup reconciles recent historical goals so achievements completed before
+  this feature are recovered.
+- Matching human guidance is moved from applied to resolved with completion
+  evidence.
+- All idle scheduler waits now catch stale/disconnect timeouts instead of
+  terminating the controller at a goal boundary.
+
+### Asset result
+- Verification found the apparent combined total of 20 Bronze bars was real:
+  ten remained banked from an earlier batch and ten had just been smelted into
+  inventory.
+- Startup reconciliation marked all already-satisfied bronze, iron, Mining, and
+  Smithing milestones complete and resolved `smelt the bronze`.
+- Strategist stopped requesting ten bronze bars and selected the next unmet
+  portfolio milestone.
+
+### Explicit smithing products
+- Added `smith_product {product, bar}`, executed through
+  `bot.smithAtAnvil(product, {barPattern})`.
+- This replaces the broken pattern of using a bar on an anvil and being unable
+  to select the smithing modal product.
+- Live verification successfully forged Bronze med helm and Bronze full helm.
+- Terra then published source-backed requirements: Bronze med helm uses one
+  Bronze bar at Smithing 3; Iron platebody uses five Iron bars at Smithing 33.
+
+### Material reservations
+- Strategist decisions now include explicit item/count/purpose reservations.
+- Reservations persist in strategic memory and are passed to the operator.
+- Before installing a smithing workflow, deterministic policy estimates bar
+  cost and rejects unrelated products that would reduce holdings below a
+  reserved floor.
+- A workflow fulfilling the reservation's stated product may consume it.

@@ -13,6 +13,7 @@ const validDecision = {
             implication: 'Build mining and smithing capability, then ask which pieces are wanted.',
         },
     ],
+    reservations: [],
     goal: {
         kind: 'leveling',
         target: 'Smithing level 20',
