@@ -47,6 +47,11 @@ export function normalizeHumanGuidance(text: string): string {
 export function addHumanGuidance(text: string): HumanGuidance {
     const normalized = normalizeHumanGuidance(text);
     const value = load();
+    // Human guidance is a strategic override. A newer instruction replaces
+    // prior active guidance unless the human restates it in the new text.
+    for (const existing of value.instructions) {
+        if (existing.status !== 'resolved') existing.status = 'resolved';
+    }
     const instruction: HumanGuidance = {
         id: `human-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         text: normalized,
@@ -70,6 +75,12 @@ export function listHumanGuidance(): HumanGuidance[] {
 export function pendingHumanGuidance(limit = 5): HumanGuidance[] {
     return load()
         .instructions.filter(instruction => instruction.status === 'pending')
+        .slice(-limit);
+}
+
+export function activeHumanGuidance(limit = 5): HumanGuidance[] {
+    return load()
+        .instructions.filter(instruction => instruction.status !== 'resolved')
         .slice(-limit);
 }
 

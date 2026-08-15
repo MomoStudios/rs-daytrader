@@ -453,3 +453,47 @@ The main controller continues under `run-main-loop.sh`.
   nine-step workflow, equipped Bronze sword and Wooden shield, selected the
   Defence style, and began attacking goblins. Defence rose from 1 to 7 during
   verification.
+
+## Session 9 (concurrent chat/planning/execution scheduler)
+
+### Why the loop changed
+- The old loop began every iteration with an eight-second
+  `waitForTradeRequest()`. Combat continued autonomously during that wait, so
+  a goblin often died with 2-3 seconds left before the operator could select
+  another target.
+- Chat ingestion, trade listening, AI planning, and character execution do not
+  need to share one blocking cadence.
+
+### Event-driven architecture
+- A state-update subscriber continuously drains ordinary chat and all type-4
+  trade-request messages into independent queues.
+- Multiple trade requests from one state batch are retained and deduplicated by
+  requester rather than losing all but the first cursor match.
+- Strategist and operator inference run in a background planning promise while
+  the existing bounded workflow continues.
+- The action lane remains serialized: only deterministic game execution sends
+  character actions.
+- Prepared plans are installed between bounded actions. If the character is in
+  combat, the scheduler lets that fight finish first.
+- Incoming trade requests have priority at the same safe boundary.
+- New chat or human guidance arriving during inference invalidates the stale
+  prepared plan before it can produce side effects, then immediately triggers
+  a new planning cycle.
+- Operator diagnosis remains tied to the installed workflow's planning context;
+  preparing a future plan cannot corrupt current stall analysis.
+
+### Combat cadence
+- An `attack_npc` directive now behaves as a continuous combat unit: if already
+  fighting, wait until that fight ends, recheck HP, immediately resolve a fresh
+  safe goblin, and start the next attack.
+- There is no fixed post-kill trade-poll delay. Attack start timestamps are now
+  separated by actual goblin fight duration (roughly 10-12 seconds in the live
+  run), with the next target acquired immediately after combat ends.
+- Trade/chat observation continues during the fight through state callbacks.
+
+### Live concurrency verification
+- Submitted a no-op human guidance update during active goblin training.
+- Combat attacks continued while both Luna sessions prepared replacement
+  strategist/operator plans.
+- The prepared plan installed at a fight boundary and immediately selected the
+  new style and next target.

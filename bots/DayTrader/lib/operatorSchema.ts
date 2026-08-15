@@ -401,6 +401,17 @@ export function parseOperatorDecision(value: unknown): OperatorDecision {
 }
 
 export function parseOperatorDecisionText(text: string): OperatorDecision {
-    const json = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    return parseOperatorDecision(JSON.parse(json));
+    const normalized = text
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
+    try {
+        return parseOperatorDecision(JSON.parse(normalized));
+    } catch (directError) {
+        const start = normalized.indexOf('{');
+        const end = normalized.lastIndexOf('}');
+        if (start < 0 || end <= start) throw directError;
+        return parseOperatorDecision(JSON.parse(normalized.slice(start, end + 1)));
+    }
 }

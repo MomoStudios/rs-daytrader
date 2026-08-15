@@ -1,5 +1,6 @@
 import type { SkillContext, SkillResult } from './skillLibrary';
 import { DayTraderOperatorBrain, type OperatorPlanningRequest } from './operatorBrain';
+import type { OperatorDecision } from './operatorSchema';
 import { executeOperatorDirective } from './operatorExecutor';
 import {
     installOperatorDecision,
@@ -41,9 +42,21 @@ export class OperatorCoordinator {
     }
 
     async plan(request: OperatorPlanningRequest, ctx: SkillContext): Promise<void> {
+        const decision = await this.preparePlan(request);
+        this.installPreparedPlan(decision, ctx, request);
+    }
+
+    async preparePlan(request: OperatorPlanningRequest): Promise<OperatorDecision> {
         if (!this.available) throw new Error('Operator AI is unavailable');
-        this.request = request;
-        const decision = await this.brain.plan(request);
+        return this.brain.plan(request);
+    }
+
+    installPreparedPlan(
+        decision: OperatorDecision,
+        ctx: SkillContext,
+        request?: OperatorPlanningRequest
+    ): void {
+        if (request) this.request = request;
         const baseline = snapshotProgress(ctx.sdk.getState());
         installOperatorDecision(decision, baseline);
         if (decision.workflow) storeReusableWorkflow(decision.workflow);

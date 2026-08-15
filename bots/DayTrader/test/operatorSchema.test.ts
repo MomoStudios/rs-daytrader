@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { parseOperatorDecision } from '../lib/operatorSchema';
+import {
+    parseOperatorDecision,
+    parseOperatorDecisionText,
+} from '../lib/operatorSchema';
 
 const valid = {
     summary: 'Train mining before pursuing runite access.',
@@ -161,5 +164,12 @@ describe('operator decision boundary', () => {
             'equip_item',
             'set_combat_style',
         ]);
+    });
+
+    test('extracts valid JSON wrapped in model prose', () => {
+        const parsed = parseOperatorDecisionText(
+            `Here is the workflow:\n${JSON.stringify(valid)}\nExecution can begin now.`
+        );
+        expect(parsed.workflow?.name).toBe('train-mining-to-85');
     });
 });

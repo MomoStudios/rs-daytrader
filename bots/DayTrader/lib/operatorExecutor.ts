@@ -138,18 +138,40 @@ export async function executeOperatorDirective(
             );
         }
         case 'attack_npc': {
-            const state = sdk.getState();
+            let state = sdk.getState();
             if (!state?.player) return result('operator:attack_npc', false, 'No player state');
             if (state.player.hp / Math.max(1, state.player.maxHp) < 0.6) {
                 return result('operator:attack_npc', false, 'Refusing combat below 60% HP');
             }
+            if (state.player.combat.inCombat) {
+                try {
+                    await sdk.waitForCondition(
+                        next => !next.player?.combat.inCombat || next.player.isDead,
+                        60_000
+                    );
+                } catch {
+                    return result(
+                        'operator:combat_wait',
+                        false,
+                        'Timed out waiting for current fight to complete'
+                    );
+                }
+                state = sdk.getState();
+            }
+            const player = state?.player;
+            if (!player || player.isDead) {
+                return result('operator:attack_npc', false, 'Character died during combat');
+            }
+            if (player.hp / Math.max(1, player.maxHp) < 0.6) {
+                return result('operator:attack_npc', false, 'Fight completed below 60% HP');
+            }
             const npc = sdk.findNearbyNpc(exactPattern(directive.target), { reachable: true });
             if (!npc) return result('operator:attack_npc', false, `NPC not found: ${directive.target}`);
-            if (npc.combatLevel > state.player.combatLevel + 10) {
+            if (npc.combatLevel > player.combatLevel + 10) {
                 return result(
                     'operator:attack_npc',
                     false,
-                    `Refusing NPC level ${npc.combatLevel}; player combat is ${state.player.combatLevel}`
+                    `Refusing NPC level ${npc.combatLevel}; player combat is ${player.combatLevel}`
                 );
             }
             if (npc.inCombat && npc.targetIndex !== -1) {

@@ -6,7 +6,11 @@
 // actions. Trade profitability and confirm-screen safety remain deterministic.
 
 import { runScript } from '../../sdk/runner';
-import type { GameMessage, TradeItem } from '../../sdk/types';
+import {
+    TRADE_REQUEST_CHAT_TYPE,
+    type GameMessage,
+    type TradeItem,
+} from '../../sdk/types';
 import { DayTraderBrain, type AiChatObservation, type AiWorldObservation } from './lib/aiBrain';
 import type { AiDecision, ChatAction, StrategicAction } from './lib/aiDecision';
 import { processChatBatch, type TradeOpportunity } from './lib/chatMonitor';
@@ -22,6 +26,7 @@ import {
 import {
     getState as getPersistentState,
     isBlacklisted,
+    noteTradeChatSeen,
     recordAd,
     recordTradeOutcome,
 } from './lib/stateStore';
@@ -43,17 +48,21 @@ import { loadOperatorState, resetOperatorWorkflow } from './lib/operatorStore';
 import { listReusableWorkflows } from './lib/workflowStore';
 import { retrieveExecutionKnowledge } from './lib/executionKnowledge';
 import {
+    activeHumanGuidance,
     markHumanGuidanceApplied,
     pendingHumanGuidance,
 } from './lib/humanGuidance';
+import type { OperatorDecision } from './lib/operatorSchema';
+import {
+    enqueueUniqueName,
+    preparedPlanIsStale,
+} from './lib/runtimeScheduler';
 
-const TRADE_REQUEST_POLL_MS = 8_000;
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
 const DISCUSSION_COOLDOWN_MS = 2 * 60 * 1000;
 const PLAN_INTERVAL_MS = 2 * 60 * 1000;
 const AI_RETRY_BACKOFF_MS = 30_000;
-const STAY_AVAILABLE_MS = 45_000;
 const CHAT_MEMORY_LIMIT = 60;
 
 interface KnownDeal {
@@ -66,10 +75,10 @@ interface KnownDeal {
 const knownDeals = new Map<string, KnownDeal>();
 const lastPitchAt = new Map<string, number>();
 const recentChat: AiChatObservation[] = [];
-let interestedUntil = 0;
 let lastAiAttemptAt = 0;
 let lastDiscussionAt = 0;
 let pendingChatForAi = false;
+let chatGeneration = 0;
 // Goals persist across restarts; concrete actions do not, because location,
 // inventory, and nearby conversation may have changed while offline.
 let activeAction: StrategicAction | null = null;
@@ -101,40 +110,27 @@ await runScript(async ({ bot, sdk }) => {
     // A fresh SDK connection may expose retained chat history as "new".
     // Establish a cursor without replaying old negotiations after restarts.
     sdk.getNewChat();
+    const fallbackOpportunities: TradeOpportunity[] = [];
+    const incomingTradeRequests: string[] = [];
+    let planningPromise: Promise<void> | null = null;
+    type PreparedPlan = {
+        decision: AiDecision;
+        operatorDecision: OperatorDecision | null;
+        operatorRequest: OperatorPlanningRequest | null;
+        guidanceIds: string[];
+        chatGeneration: number;
+        strategistChanged: boolean;
+    };
+    const planningState: { preparedPlan: PreparedPlan | null } = {
+        preparedPlan: null,
+    };
+
+    const unsubscribeChatWatcher = sdk.onStateUpdate(() => ingestNewChat());
 
     while (true) {
-        const requester = await sdk.waitForTradeRequest({ timeout: TRADE_REQUEST_POLL_MS });
-        if (requester) {
-            await handleIncomingTradeRequest(requester);
-            continue;
-        }
+        ingestNewChat();
 
-        const newMessages = sdk.getNewChat();
-        const newExternalMessages = newMessages.filter(message => !message.fromSelf && message.sender && message.text);
-        const deterministicOpportunities = processChatBatch(newMessages);
-        appendChatObservations(newExternalMessages);
-        if (newExternalMessages.length > 0) {
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
-            pendingChatForAi = true;
-        }
-
-        const strategy = loadStrategy();
-        const operatorRuntime = loadOperatorState();
-        const pendingGuidance = pendingHumanGuidance();
-        const planningDue = shouldRequestAiPlan({
-            pendingChatForAi:
-                pendingChatForAi ||
-                pendingGuidance.length > 0 ||
-                !!operatorRuntime.pendingEscalation,
-            hasActiveAction: !!activeAction || !!operatorRuntime.workflow,
-            now: Date.now(),
-            lastPlannedAt: strategy.lastPlannedAt,
-            planIntervalMs: PLAN_INTERVAL_MS,
-        });
-        const backoffElapsed = Date.now() - lastAiAttemptAt >= AI_RETRY_BACKOFF_MS;
-
-        let plannedThisIteration = false;
-        if (!brainAvailable && backoffElapsed) {
+        if (!brainAvailable && Date.now() - lastAiAttemptAt >= AI_RETRY_BACKOFF_MS) {
             lastAiAttemptAt = Date.now();
             try {
                 await brain.start();
@@ -145,65 +141,43 @@ await runScript(async ({ bot, sdk }) => {
             }
         }
 
-        if (brainAvailable && planningDue && backoffElapsed) {
-            lastAiAttemptAt = Date.now();
-            try {
-                const observation = buildWorldObservation();
-                const guidanceIds = observation.humanGuidance.map(instruction => instruction.id);
-                const decision = await brain.decide(observation);
-                recordDecision(decision);
-                markHumanGuidanceApplied(guidanceIds, decision.summary);
-                activeAction = decision.nextAction;
-                pendingChatForAi = false;
-                plannedThisIteration = true;
-                log('ai_plan', {
-                    model: brain.getModel(),
-                    summary: decision.summary,
-                    marketSignals: decision.marketSignals,
-                    goal: decision.goal,
-                    nextAction: decision.nextAction,
-                    chatActions: decision.chatActions,
-                });
-                await executeChatActions(decision);
-                if (operatorAvailable) {
-                    try {
-                        const request = buildOperatorRequest(decision);
-                        // A new strategic decision owns execution immediately;
-                        // never let an obsolete workflow keep running if the
-                        // replacement operator response fails validation.
-                        resetOperatorWorkflow();
-                        await operator.plan(request, { bot, sdk });
-                        // The operator workflow now owns execution. Keep the
-                        // strategist action only as a fallback when operator
-                        // planning is unavailable.
-                        activeAction = null;
-                    } catch (error) {
-                        log('ai_error', { stage: 'operator_plan', error: String(error) });
-                    }
-                }
+        startPlanningIfDue();
 
-            } catch (error) {
-                log('ai_error', { stage: 'decision', error: String(error) });
-            }
+        const requester = incomingTradeRequests.shift();
+        if (requester) {
+            await finishCurrentFight();
+            await handleIncomingTradeRequest(requester);
+            pendingChatForAi = true;
+            chatGeneration += 1;
+            continue;
         }
 
-        if (
-            operatorAvailable &&
-            !plannedThisIteration &&
-            strategy.lastDecision &&
-            operator.needsAudit()
-        ) {
-            try {
-                await operator.plan(buildOperatorRequest(strategy.lastDecision), { bot, sdk });
-            } catch (error) {
-                log('ai_error', { stage: 'operator_audit', error: String(error) });
+        if (planningState.preparedPlan) {
+            const candidate = planningState.preparedPlan;
+            const currentGuidance = pendingHumanGuidance();
+            if (
+                preparedPlanIsStale({
+                    planChatGeneration: candidate.chatGeneration,
+                    currentChatGeneration: chatGeneration,
+                    planGuidanceIds: candidate.guidanceIds,
+                    pendingGuidanceIds: currentGuidance.map(instruction => instruction.id),
+                })
+            ) {
+                // Inputs changed while the AIs were thinking. Drop the stale
+                // answer without side effects and immediately plan again.
+                planningState.preparedPlan = null;
+                continue;
             }
+            await finishCurrentFight();
+            const plan = candidate;
+            planningState.preparedPlan = null;
+            await installPreparedPlan(plan);
+            continue;
         }
 
-        if (!brainAvailable && deterministicOpportunities.length > 0) {
-            for (const opportunity of deterministicOpportunities) {
-                await respondDeterministically(opportunity);
-            }
+        if (!brainAvailable && fallbackOpportunities.length > 0) {
+            const opportunity = fallbackOpportunities.shift();
+            if (opportunity) await respondDeterministically(opportunity);
         }
 
         if (shouldAdvertise()) {
@@ -211,16 +185,13 @@ await runScript(async ({ bot, sdk }) => {
                 sellableItems: getSellableItemNames({ bot, sdk }),
             });
             await sdk.say(message);
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
             continue;
         }
 
-        if (Date.now() < interestedUntil) continue;
-
         if (operatorAvailable && loadOperatorState().pendingEscalation) {
-            // Wait for the strategist to answer the operator instead of
-            // drifting into unrelated fallback gathering.
-            await sdk.waitForTicks(2);
+            // Planning runs in the background; keep the action lane quiet until
+            // the strategist answers the operator escalation.
+            await sdk.waitForTicks(1);
             continue;
         }
 
@@ -236,6 +207,9 @@ await runScript(async ({ bot, sdk }) => {
         const usedOperator = operatorResult !== null;
         if (operatorResult) {
             result = operatorResult;
+        } else if (planningPromise) {
+            await sdk.waitForTicks(1);
+            continue;
         } else if (activeAction) {
             try {
                 result = await executeStrategicAction({ bot, sdk }, activeAction);
@@ -251,18 +225,161 @@ await runScript(async ({ bot, sdk }) => {
             result = await executeFallbackAction({ bot, sdk });
         }
         recordActionResult(result.action, result.success, result.message);
+        if (!result.success) await sdk.waitForTicks(1).catch(() => undefined);
 
         // A failed skill usually means the goal needs a prerequisite or a
         // different location. Replan promptly rather than repeating it.
         if (!usedOperator && !result.success) {
             activeAction = null;
-            if (plannedThisIteration) lastAiAttemptAt = Date.now() - AI_RETRY_BACKOFF_MS;
         } else if (!usedOperator && activeAction?.type !== 'train' && activeAction?.type !== 'sell_excess') {
             // Travel, pickup, and waiting are one-shot actions. Selling may
             // repeat one bounded inventory item per loop until stock is clear.
             activeAction = null;
             lastAiAttemptAt = Date.now() - AI_RETRY_BACKOFF_MS;
         }
+    }
+
+    function ingestNewChat(): void {
+        const messages = sdk.getNewChat({
+            types: [0, 1, 2, 3, TRADE_REQUEST_CHAT_TYPE, 6, 7],
+            includeSelf: true,
+        });
+        if (messages.length === 0) return;
+        const tradeRequests = messages.filter(
+            message =>
+                message.type === TRADE_REQUEST_CHAT_TYPE &&
+                /wishes to trade/i.test(message.text) &&
+                message.sender
+        );
+        for (const request of tradeRequests) {
+            enqueueUniqueName(incomingTradeRequests, request.sender);
+        }
+        if (tradeRequests.length > 0) noteTradeChatSeen();
+        const ordinaryMessages = messages.filter(
+            message => message.type !== TRADE_REQUEST_CHAT_TYPE
+        );
+        const external = ordinaryMessages.filter(
+            message => !message.fromSelf && message.sender && message.text
+        );
+        fallbackOpportunities.push(...processChatBatch(ordinaryMessages));
+        appendChatObservations(external);
+        if (external.length > 0 || tradeRequests.length > 0) {
+            pendingChatForAi = true;
+            chatGeneration += 1;
+        }
+    }
+
+    function startPlanningIfDue(): void {
+        if (planningPromise || planningState.preparedPlan) return;
+        const strategy = loadStrategy();
+        const operatorRuntime = loadOperatorState();
+        const guidance = pendingHumanGuidance();
+        const strategicPlanningDue = shouldRequestAiPlan({
+            pendingChatForAi:
+                pendingChatForAi ||
+                guidance.length > 0 ||
+                !!operatorRuntime.pendingEscalation,
+            hasActiveAction: !!activeAction || !!operatorRuntime.workflow,
+            now: Date.now(),
+            lastPlannedAt: strategy.lastPlannedAt,
+            planIntervalMs: PLAN_INTERVAL_MS,
+        });
+        const auditDue =
+            operatorAvailable &&
+            !!strategy.lastDecision &&
+            operator.needsAudit();
+        if ((!strategicPlanningDue && !auditDue) || Date.now() - lastAiAttemptAt < AI_RETRY_BACKOFF_MS) {
+            return;
+        }
+
+        lastAiAttemptAt = Date.now();
+        const generation = chatGeneration;
+        planningPromise = (async () => {
+            if (strategicPlanningDue && brainAvailable) {
+                const observation = buildWorldObservation();
+                const guidanceIds = observation.humanGuidance.map(instruction => instruction.id);
+                const decision = await brain.decide(observation);
+                let operatorDecision: OperatorDecision | null = null;
+                let operatorRequest: OperatorPlanningRequest | null = null;
+                if (operatorAvailable) {
+                    try {
+                        operatorRequest = buildOperatorRequest(decision);
+                        operatorDecision = await operator.preparePlan(operatorRequest);
+                    } catch (error) {
+                        log('ai_error', { stage: 'operator_plan_prepare', error: String(error) });
+                    }
+                }
+                planningState.preparedPlan = {
+                    decision,
+                    operatorDecision,
+                    operatorRequest,
+                    guidanceIds,
+                    chatGeneration: generation,
+                    strategistChanged: true,
+                };
+                return;
+            }
+
+            if (auditDue && strategy.lastDecision && operatorAvailable) {
+                const decision = strategy.lastDecision;
+                const operatorRequest = buildOperatorRequest(decision);
+                const operatorDecision = await operator.preparePlan(operatorRequest);
+                planningState.preparedPlan = {
+                    decision,
+                    operatorDecision,
+                    operatorRequest,
+                    guidanceIds: [],
+                    chatGeneration: generation,
+                    strategistChanged: false,
+                };
+            }
+        })()
+            .catch(error => {
+                log('ai_error', { stage: 'background_planning', error: String(error) });
+            })
+            .finally(() => {
+                planningPromise = null;
+            });
+    }
+
+    async function installPreparedPlan(plan: PreparedPlan): Promise<void> {
+        if (plan.strategistChanged) {
+            recordDecision(plan.decision);
+            markHumanGuidanceApplied(plan.guidanceIds, plan.decision.summary);
+            activeAction = plan.decision.nextAction;
+            pendingChatForAi = chatGeneration > plan.chatGeneration;
+            log('ai_plan', {
+                model: brain.getModel(),
+                summary: plan.decision.summary,
+                marketSignals: plan.decision.marketSignals,
+                goal: plan.decision.goal,
+                nextAction: plan.decision.nextAction,
+                chatActions: plan.decision.chatActions,
+            });
+            await executeChatActions(plan.decision);
+        }
+
+        if (operatorAvailable && plan.operatorDecision) {
+            resetOperatorWorkflow();
+            operator.installPreparedPlan(
+                plan.operatorDecision,
+                { bot, sdk },
+                plan.operatorRequest ?? undefined
+            );
+            activeAction = null;
+        } else if (plan.strategistChanged) {
+            resetOperatorWorkflow();
+        }
+    }
+
+    async function finishCurrentFight(): Promise<void> {
+        if (!sdk.getState()?.player?.combat.inCombat) return;
+        await sdk
+            .waitForCondition(
+                state => !state.player?.combat.inCombat || state.player.isDead,
+                60_000
+            )
+            .catch(() => undefined);
     }
 
     function appendChatObservations(messages: GameMessage[]): void {
@@ -340,7 +457,7 @@ await runScript(async ({ bot, sdk }) => {
             collectionPortfolio: updateCollectionStatus(world.inventory),
             recentActionResults: loadStrategy().recentActionResults.slice(-10),
             recentChat: [...recentChat],
-            humanGuidance: pendingHumanGuidance(),
+            humanGuidance: activeHumanGuidance(),
             tradeChatSilentForMs: Date.now() - persistent.lastTradeChatTime,
             advertisementDue: shouldAdvertise(),
         };
@@ -435,7 +552,6 @@ await runScript(async ({ bot, sdk }) => {
             listReusableWorkflows().slice(0, 20)
         );
         request.executionKnowledge = retrieveExecutionKnowledge(decision);
-        operator.setPlanningContext(request);
         return request;
     }
 
@@ -460,7 +576,6 @@ await runScript(async ({ bot, sdk }) => {
             lastDiscussionAt = Date.now();
             recordAd(message, 'ai_discussion');
             log('ad_sent', { message, style: 'ai_discussion', rationale: action.rationale });
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
             return;
         }
 
@@ -483,7 +598,6 @@ await runScript(async ({ bot, sdk }) => {
             await sdk.say(message);
             recordAd(message, 'ai');
             log('ad_sent', { message, style: 'ai', rationale: action.rationale });
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
             return;
         }
 
@@ -501,7 +615,6 @@ await runScript(async ({ bot, sdk }) => {
             const message = validateConversationalReply(action.message);
             await sdk.say(`@${observedSender} ${message}`);
             lastPitchAt.set(observedSender, Date.now());
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
             return;
         }
 
@@ -529,7 +642,6 @@ await runScript(async ({ bot, sdk }) => {
             });
             await sdk.say(`@${observedSender} I can sell ${inventoryItem.name} for ${safePrice}gp; trade me.`);
             lastPitchAt.set(observedSender, Date.now());
-            interestedUntil = Date.now() + STAY_AVAILABLE_MS;
             return;
         }
 
@@ -549,7 +661,6 @@ await runScript(async ({ bot, sdk }) => {
         });
         await sdk.say(`@${observedSender} I can pay ${safePrice}gp for ${action.item}; trade me.`);
         lastPitchAt.set(observedSender, Date.now());
-        interestedUntil = Date.now() + STAY_AVAILABLE_MS;
     }
 
     function buildInventoryBackedSaleAd(items: string[]): string | null {
@@ -579,7 +690,6 @@ await runScript(async ({ bot, sdk }) => {
                     at: Date.now(),
                 });
                 lastPitchAt.set(opportunity.sender, Date.now());
-                interestedUntil = Date.now() + STAY_AVAILABLE_MS;
                 await sdk.say(`@${opportunity.sender} I've got ${inventoryItem.name} for ${ask}gp; trade me.`);
                 return;
             }
@@ -596,7 +706,6 @@ await runScript(async ({ bot, sdk }) => {
                     at: Date.now(),
                 });
                 lastPitchAt.set(opportunity.sender, Date.now());
-                interestedUntil = Date.now() + STAY_AVAILABLE_MS;
                 await sdk.say(`@${opportunity.sender} I can pay ${bid}gp for ${guess}; trade me.`);
                 return;
             }
