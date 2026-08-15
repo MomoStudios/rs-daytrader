@@ -1,0 +1,41 @@
+name: Verify Content
+
+on:
+  pull_request:
+  push:
+    paths:
+    - '.github/workflows/content.yml'
+    - '**'
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Clone Content
+      uses: actions/checkout@v6
+      with:
+        path: content
+
+    - name: Clone Engine
+      uses: actions/checkout@v6
+      with:
+        repository: LostCityRS/Engine-TS
+        ref: '274'
+        path: engine
+
+    - name: Install Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: engine/package-lock.json
+
+    - name: Install dependencies
+      working-directory: engine
+      run: npm ci
+
+    - name: Pack
+      working-directory: engine
+      run: npm run build

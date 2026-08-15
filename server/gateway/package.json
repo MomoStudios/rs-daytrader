@@ -1,0 +1,12 @@
+{
+  "name": "bot-agent",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "gateway": "bun run gateway.ts",
+    "gateway:dev": "bun run --watch gateway.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

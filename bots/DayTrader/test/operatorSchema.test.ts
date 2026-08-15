@@ -1,0 +1,113 @@
+import { describe, expect, test } from 'bun:test';
+import { parseOperatorDecision } from '../lib/operatorSchema';
+
+const valid = {
+    summary: 'Train mining before pursuing runite access.',
+    goal: {
+        kind: 'leveling',
+        target: 'Mining level 85',
+        targetValue: 85,
+        rationale: 'Runite ore requires Mining 85.',
+    },
+    blockers: [
+        {
+            kind: 'skill',
+            target: 'Mining 85',
+            evidence: 'Current Mining level is 20.',
+            severity: 'high',
+        },
+    ],
+    workflow: {
+        name: 'train-mining-to-85',
+        goal: 'Reach Mining 85',
+        reusable: true,
+        version: 1,
+        successCriteria: ['Mining level is at least 85'],
+        steps: [
+            {
+                id: 'train-mining',
+                description: 'Run bounded mining actions until level 85.',
+                directive: {
+                    type: 'strategic_action',
+                    action: { type: 'train', activity: 'mining' },
+                },
+                completion: { type: 'skill_level', skill: 'Mining', level: 85 },
+                repeatUntilComplete: true,
+                maxAttempts: 100,
+            },
+        ],
+    },
+    escalation: null,
+};
+
+describe('operator decision boundary', () => {
+    test('accepts a bounded reusable workflow', () => {
+        expect(parseOperatorDecision(valid).workflow?.steps[0]?.directive.type).toBe('strategic_action');
+    });
+
+    test('rejects code execution directives', () => {
+        expect(() =>
+            parseOperatorDecision({
+                ...valid,
+                workflow: {
+                    ...valid.workflow,
+                    steps: [
+                        {
+                            ...valid.workflow.steps[0],
+                            directive: { type: 'run_code', code: 'await bot.walkTo(1, 1)' },
+                        },
+                    ],
+                },
+            })
+        ).toThrow('directive.type is invalid');
+    });
+
+    test('rejects unbounded workflows', () => {
+        expect(() =>
+            parseOperatorDecision({
+                ...valid,
+                workflow: {
+                    ...valid.workflow,
+                    steps: Array.from({ length: 31 }, (_, index) => ({
+                        ...valid.workflow.steps[0],
+                        id: `step-${index}`,
+                    })),
+                },
+            })
+        ).toThrow('1-30');
+    });
+
+    test('allows a strategic escalation without a workflow', () => {
+        const decision = parseOperatorDecision({
+            ...valid,
+            workflow: null,
+            escalation: {
+                reason: 'competition',
+                question: 'Runite rocks are continuously contested; keep trying or pursue another stock item?',
+                evidence: ['Five nearby players', 'No ore gained in ten attempts'],
+                suggestedOptions: ['Try another mine', 'Switch to another demanded resource'],
+            },
+        });
+        expect(decision.escalation?.reason).toBe('competition');
+    });
+
+    test('allows safe blocking-UI recovery workflows', () => {
+        const decision = parseOperatorDecision({
+            ...valid,
+            workflow: {
+                ...valid.workflow,
+                steps: [
+                    {
+                        id: 'clear-ui',
+                        description: 'Dismiss a level-up modal.',
+                        directive: { type: 'dismiss_blocking_ui' },
+                        completion: { type: 'dialog_closed' },
+                        repeatUntilComplete: false,
+                        maxAttempts: 2,
+                    },
+                ],
+            },
+        });
+        expect(decision.workflow?.steps[0]?.directive.type).toBe('dismiss_blocking_ui');
+    });
+});

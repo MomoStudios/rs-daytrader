@@ -1,0 +1,27 @@
+{
+  "name": "server",
+  "private": true,
+  "scripts": {
+    "check": "bun run typecheck && bun run typecheck:webclient && bun run test",
+    "docs:api": "bun sdk/generate-api-docs.ts",
+    "docs:api:check": "bun sdk/generate-api-docs.ts --check",
+    "fetch-collision-data": "bun sdk/fetch-collision-data.ts",
+    "test": "bun test sdk/test server/webclient/src/bot server/webclient/src/util server/webclient/src/lite",
+    "observe:daytrader": "bun bots/DayTrader/observer/server.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:webclient": "tsc --noEmit -p server/webclient/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "puppeteer": "^24.0.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^1.0.11",
+    "@inquirer/prompts": "^7.5.3",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "open": "^11.0.0"
+  }
+}

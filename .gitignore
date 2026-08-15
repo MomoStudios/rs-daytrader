@@ -1,0 +1,45 @@
+node_modules/
+__pycache__/
+.DS_Store
+runs/
+screenshots/
+public-bot/
+public-client/
+
+server.json
+.env
+
+backups/
+.obsidian/
+
+# Bot folders (except template)
+bots/*/
+!bots/_template/
+!bots/DayTrader/
+bots/DayTrader/*
+!bots/DayTrader/daytrader.ts
+!bots/DayTrader/lab_log.md
+!bots/DayTrader/run-lite-client.sh
+!bots/DayTrader/run-main-loop.sh
+!bots/DayTrader/run-observer.sh
+!bots/DayTrader/bot.env.example
+!bots/DayTrader/lib/
+!bots/DayTrader/lib/**
+!bots/DayTrader/test/
+!bots/DayTrader/test/**
+!bots/DayTrader/observer/
+!bots/DayTrader/observer/**
+
+# Daemon type checker temp file
+sdk/__exec_check.ts
+
+# Upstream npm lockfile; this repo builds the engine with bun/bun.lock only.
+# Deleted locally — ignore so vendor syncs don't silently reintroduce it.
+server/engine/package-lock.json
+
+# Generate per-install server RSA keys; never publish the private key.
+server/engine/data/config/private.pem
+
+# SDK is copied into Docker via Dockerfile; don't duplicate it under server/
+server/sdk/
+jobs/

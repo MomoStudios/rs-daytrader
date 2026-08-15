@@ -1,0 +1,8 @@
+# ai.txt
+
+Responsible security pen-testing is welcome on the rs-sdk demo server.
+Please don't break things, delete data, or disrupt the service.
+Report anything you find: https://github.com/maxbittker/rs-sdk/issues
+
+Out of scope: 
+Underlying fly.io infrastructure, phishing/social engineering attacks. 

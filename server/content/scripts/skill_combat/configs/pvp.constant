@@ -1,0 +1,3 @@
+^pk_skull_duration = 2000
+// 5 minutes at the 300ms prod tickrate
+^pvp_death_mark_duration = 1000

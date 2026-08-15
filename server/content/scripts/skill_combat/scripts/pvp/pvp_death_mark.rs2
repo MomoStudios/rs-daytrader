@@ -1,0 +1,30 @@
+// %pvp_death_mark holds the map_clock tick at which the mark expires.
+// While marked, every death respawns at 1hp so players can't suicide on an
+// npc right after a pvp death to shortcut back to full health.
+
+// requires active_player
+[proc,set_pvp_death_mark]
+%pvp_death_mark = add(map_clock, ^pvp_death_mark_duration);
+
+[proc,has_pvp_death_mark]()(boolean)
+if (map_clock < %pvp_death_mark) {
+    return(true);
+}
+return(false);
+
+// stored as remaining ticks while offline, same scheme as pk_skull
+[proc,set_pvp_death_mark_logout]
+if (%pvp_death_mark < 1) {
+    return;
+}
+%pvp_death_mark = sub(%pvp_death_mark, map_clock);
+
+[proc,set_pvp_death_mark_login]
+if (%pvp_death_mark < 1) {
+    %pvp_death_mark = 0;
+    return;
+}
+if (%pvp_death_mark > ^pvp_death_mark_duration) {
+    %pvp_death_mark = ^pvp_death_mark_duration;
+}
+%pvp_death_mark = add(map_clock, %pvp_death_mark);
