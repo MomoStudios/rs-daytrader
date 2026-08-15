@@ -180,6 +180,18 @@ Return exactly one JSON object and no markdown:
       "purpose": "demanded iron platebody"
     }
   ],
+  "tradeOrders": [
+    {
+      "kind": "sell_bundle",
+      "recipient": "buyer",
+      "items": [
+        {"item": "Iron platebody", "amount": 1},
+        {"item": "Iron platelegs", "amount": 1}
+      ],
+      "priceGp": 1000,
+      "rationale": "buyer requested the held bundle"
+    }
+  ],
   "goal": {
     "kind": "leveling" | "item_acquisition" | "wealth",
     "target": "plain-language target",
@@ -206,6 +218,10 @@ Allowed destinations: ${DESTINATIONS.join(', ')}.
 At most 3 chatActions. Use an empty array when no response is worthwhile.
 Use reservations to protect materials committed to persistent production goals
 or strong market demand. Remove reservations only when fulfilled or obsolete.
+Use tradeOrders only for concrete player deals where the recipient and exact
+items are known. The operator may stage banked items and invoke the deterministic
+atomic trade subsystem. Proposed prices are floors only: policy raises unsafe
+prices to the minimum profitable amount and rechecks both trade screens.
 targetValue is the actual numeric completion target: desired skill level for a
 leveling goal, desired item count for item acquisition, or desired gp for wealth.
 `;

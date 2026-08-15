@@ -8,6 +8,7 @@ describe('operator execution knowledge retrieval', () => {
             summary: 'Acquire runite ore.',
             marketSignals: [],
             reservations: [],
+            tradeOrders: [],
             goal: {
                 kind: 'item_acquisition',
                 target: 'Maintain runite ore in stock',

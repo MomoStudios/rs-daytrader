@@ -63,6 +63,7 @@ export function loadStrategy(): StrategyState {
                   marketSignals: parsed.lastDecision.marketSignals ?? [],
                   chatActions: parsed.lastDecision.chatActions ?? [],
                   reservations: parsed.lastDecision.reservations ?? [],
+                  tradeOrders: parsed.lastDecision.tradeOrders ?? [],
               }
             : null;
         state = { ...defaultState(), ...parsed, lastDecision };

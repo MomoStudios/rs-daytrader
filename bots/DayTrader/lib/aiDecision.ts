@@ -45,6 +45,14 @@ export interface MaterialReservation {
     purpose: string;
 }
 
+export interface TradeOrder {
+    kind: 'sell_bundle';
+    recipient: string;
+    items: Array<{ item: string; amount: number }>;
+    priceGp: number;
+    rationale: string;
+}
+
 export type StrategicAction =
     | { type: 'train'; activity: ProgressionActivity }
     | { type: 'travel'; destination: Destination }
@@ -81,6 +89,7 @@ export interface AiDecision {
     summary: string;
     marketSignals: MarketSignal[];
     reservations: MaterialReservation[];
+    tradeOrders: TradeOrder[];
     goal: StrategicGoal;
     chatActions: ChatAction[];
     nextAction: StrategicAction;
@@ -204,6 +213,9 @@ export function parseAiDecision(value: unknown): AiDecision {
     if (!Array.isArray(value.reservations) || value.reservations.length > 10) {
         throw new Error('reservations must contain at most 10 entries');
     }
+    if (!Array.isArray(value.tradeOrders) || value.tradeOrders.length > 3) {
+        throw new Error('tradeOrders must contain at most 3 entries');
+    }
     if (!Array.isArray(value.chatActions)) throw new Error('chatActions must be an array');
     if (value.chatActions.length > 3) throw new Error('chatActions may contain at most 3 entries');
     return {
@@ -215,6 +227,45 @@ export function parseAiDecision(value: unknown): AiDecision {
                 item: boundedString(entry.item, `reservations[${index}].item`, 80),
                 count: boundedNumber(entry.count, `reservations[${index}].count`, 1, 100_000),
                 purpose: boundedString(entry.purpose, `reservations[${index}].purpose`, 180),
+            };
+        }),
+        tradeOrders: value.tradeOrders.map((entry, index): TradeOrder => {
+            if (!isRecord(entry) || entry.kind !== 'sell_bundle') {
+                throw new Error(`tradeOrders[${index}] must be a sell_bundle object`);
+            }
+            if (!Array.isArray(entry.items) || entry.items.length < 1 || entry.items.length > 8) {
+                throw new Error(`tradeOrders[${index}].items must contain 1-8 entries`);
+            }
+            return {
+                kind: 'sell_bundle',
+                recipient: boundedString(entry.recipient, `tradeOrders[${index}].recipient`, 32),
+                items: entry.items.map((item, itemIndex) => {
+                    if (!isRecord(item)) throw new Error('trade order item must be an object');
+                    return {
+                        item: boundedString(
+                            item.item,
+                            `tradeOrders[${index}].items[${itemIndex}].item`,
+                            80
+                        ),
+                        amount: boundedNumber(
+                            item.amount,
+                            `tradeOrders[${index}].items[${itemIndex}].amount`,
+                            1,
+                            1_000
+                        ),
+                    };
+                }),
+                priceGp: boundedNumber(
+                    entry.priceGp,
+                    `tradeOrders[${index}].priceGp`,
+                    1,
+                    100_000_000
+                ),
+                rationale: boundedString(
+                    entry.rationale,
+                    `tradeOrders[${index}].rationale`,
+                    240
+                ),
             };
         }),
         goal: validateGoal(value.goal),

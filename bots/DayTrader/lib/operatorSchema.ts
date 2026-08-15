@@ -44,6 +44,12 @@ export type OperatorDirective =
     | { type: 'shop_close' }
     | { type: 'shop_buy'; item: string; amount: number }
     | { type: 'smith_product'; product: string; bar: string }
+    | {
+          type: 'trade_bundle_sell';
+          recipient: string;
+          items: Array<{ item: string; amount: number }>;
+          priceGp: number;
+      }
     | { type: 'equip_item'; item: string }
     | { type: 'set_combat_style'; skill: 'Attack' | 'Strength' | 'Defence' }
     | { type: 'attack_npc'; target: string }
@@ -124,6 +130,7 @@ const DIRECTIVE_TYPES = new Set([
     'shop_close',
     'shop_buy',
     'smith_product',
+    'trade_bundle_sell',
     'equip_item',
     'set_combat_style',
     'attack_npc',
@@ -272,6 +279,22 @@ function directive(value: unknown): OperatorDirective {
                 type: 'smith_product',
                 product: string(data.product, 'directive.product', 80),
                 bar: string(data.bar, 'directive.bar', 80),
+            };
+        case 'trade_bundle_sell':
+            if (!Array.isArray(data.items) || data.items.length < 1 || data.items.length > 8) {
+                throw new Error('directive.items must contain 1-8 entries');
+            }
+            return {
+                type: 'trade_bundle_sell',
+                recipient: string(data.recipient, 'directive.recipient', 32),
+                items: data.items.map((entry, index) => {
+                    const item = record(entry, `directive.items[${index}]`);
+                    return {
+                        item: string(item.item, `directive.items[${index}].item`, 80),
+                        amount: integer(item.amount, `directive.items[${index}].amount`, 1, 1_000),
+                    };
+                }),
+                priceGp: integer(data.priceGp, 'directive.priceGp', 1, 100_000_000),
             };
         case 'equip_item':
             return { type: 'equip_item', item: string(data.item, 'directive.item', 80) };

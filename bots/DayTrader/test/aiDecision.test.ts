@@ -14,6 +14,7 @@ const validDecision = {
         },
     ],
     reservations: [],
+    tradeOrders: [],
     goal: {
         kind: 'leveling',
         target: 'Smithing level 20',
@@ -92,5 +93,24 @@ describe('AI decision boundary', () => {
             ],
         });
         expect(parsed.chatActions[0]?.type).toBe('discussion');
+    });
+
+    test('accepts a typed multi-item player trade order', () => {
+        const parsed = parseAiDecision({
+            ...validDecision,
+            tradeOrders: [
+                {
+                    kind: 'sell_bundle',
+                    recipient: 'Henryatkins',
+                    items: [
+                        { item: 'Iron platebody', amount: 1 },
+                        { item: 'Iron platelegs', amount: 1 },
+                    ],
+                    priceGp: 150,
+                    rationale: 'Confirmed bundle demand.',
+                },
+            ],
+        });
+        expect(parsed.tradeOrders[0]?.items).toHaveLength(2);
     });
 });

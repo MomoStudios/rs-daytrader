@@ -30,6 +30,22 @@ export const MIN_ABSOLUTE_PROFIT_GP = 5;
 /** Max count of unpriced items we'll accept in our own outgoing offer (0 = never). */
 export const MAX_UNKNOWN_GIVE_ITEMS = 0;
 
+export function minimumSafeBundleAsk(
+    items: Array<{ name: string; count: number }>,
+    proposedPriceGp: number
+): { safeAskGp: number; totalValueGp: number; unknownItems: string[] } {
+    const value = estimateOfferValue(items);
+    return {
+        safeAskGp: Math.max(
+            proposedPriceGp,
+            Math.ceil(value.total * MIN_PROFIT_RATIO),
+            value.total + MIN_ABSOLUTE_PROFIT_GP
+        ),
+        totalValueGp: value.total,
+        unknownItems: value.unknownItems,
+    };
+}
+
 export interface TradeDecision {
     accept: boolean;
     reason: string;

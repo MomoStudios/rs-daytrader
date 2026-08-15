@@ -625,3 +625,43 @@ The main controller continues under `run-main-loop.sh`.
   cost and rejects unrelated products that would reduce holdings below a
   reserved floor.
 - A workflow fulfilling the reservation's stated product may consume it.
+
+## Session 13 (typed player-trade handoff)
+
+### Gap
+- The deterministic main controller could handle incoming one-item deals, but
+  strategist/operator schemas had no way to represent a staged multi-item
+  outgoing sale.
+- The development agent correctly reported “player trade fulfillment is
+  unavailable to the operator.”
+
+### Typed handoff
+- Strategist decisions now include `tradeOrders[]` with a named recipient,
+  exact item/count bundle, proposed price floor, and rationale.
+- When all items exist account-wide, the scheduler deterministically compiles
+  the order into an operator workflow rather than relying on model-generated
+  boilerplate.
+- Banked bundle items are staged with open/withdraw/close steps before trade.
+- Added the bounded `trade_bundle_sell` directive.
+
+### Deterministic safety
+- Rejects blacklisted recipients, missing quantities, essential tools, and
+  unpriceable items.
+- Computes total book value and raises the strategist price to satisfy both the
+  15% ratio and 5gp absolute-profit floors.
+- Executes through `bot.trade` with exact give items and required coins, which
+  rechecks the offer on both trade screens.
+- Records profit and the full trade result through the existing state/logger
+  path.
+
+### Verification
+- Synthetic strategist output produced a four-item Henryatkins bundle.
+- Deterministic compiler generated bank staging plus atomic trade steps.
+- Live execution withdrew Iron platebody, platelegs, full helm, and square
+  shield and attempted the trade.
+- The historical 150gp proposal was raised to **1,337gp** for a bundle valued
+  at 1,162gp.
+- Trade safely failed because Henryatkins was not nearby; the operator preserved
+  and re-banked the reserved bundle instead of repeating blindly.
+- Terra published replacement managed knowledge confirming player trading is
+  now supported through `tradeOrders` and `trade_bundle_sell`.

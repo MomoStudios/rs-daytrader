@@ -69,6 +69,7 @@ import {
     evaluateGoalCompletion,
     guidanceIdsSatisfiedByGoal,
 } from './lib/goalCompletion';
+import { compileTradeHandoff } from './lib/tradeHandoff';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -360,7 +361,9 @@ await runScript(async ({ bot, sdk }) => {
                 if (operatorAvailable) {
                     try {
                         operatorRequest = buildOperatorRequest(decision);
-                        operatorDecision = await operator.preparePlan(operatorRequest);
+                        operatorDecision =
+                            compileTradeHandoff(decision, operatorRequest.assetMemory) ??
+                            (await operator.preparePlan(operatorRequest));
                     } catch (error) {
                         log('ai_error', { stage: 'operator_plan_prepare', error: String(error) });
                     }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { reservationViolations, smithingBarCost } from '../lib/reservationPolicy';
+import { minimumSafeBundleAsk } from '../lib/tradeEvaluator';
 import type { OperatorWorkflow } from '../lib/operatorSchema';
 
 const workflow = (product: string, goal: string): OperatorWorkflow => ({
@@ -62,5 +63,20 @@ describe('material reservation policy', () => {
                 assets
             )
         ).toEqual([]);
+    });
+
+    test('raises an unsafe bundle price to the deterministic profit floor', () => {
+        const ask = minimumSafeBundleAsk(
+            [
+                { name: 'Iron platebody', count: 1 },
+                { name: 'Iron platelegs', count: 1 },
+                { name: 'Iron full helm', count: 1 },
+                { name: 'Iron sq shield', count: 1 },
+            ],
+            150
+        );
+        expect(ask.totalValueGp).toBe(1_162);
+        expect(ask.safeAskGp).toBeGreaterThan(1_162);
+        expect(ask.unknownItems).toEqual([]);
     });
 });

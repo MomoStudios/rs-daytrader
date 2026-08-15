@@ -1,8 +1,16 @@
 import type { SkillContext, SkillResult } from './skillLibrary';
 import { executeStrategicAction } from './skillLibrary';
 import { ESSENTIAL_TOOL_PATTERN } from './tradeEvaluator';
+import {
+    minimumSafeBundleAsk,
+} from './tradeEvaluator';
 import type { OperatorDirective } from './operatorSchema';
 import { log } from './logger';
+import { estimateOfferValue } from './priceBook';
+import {
+    isBlacklisted,
+    recordTradeOutcome,
+} from './stateStore';
 
 function exactPattern(value: string): RegExp {
     return new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
@@ -117,6 +125,86 @@ export async function executeOperatorDirective(
                 timeout: 15_000,
             });
             return result('operator:smith_product', action.success, action.message);
+        }
+        case 'trade_bundle_sell': {
+            if (isBlacklisted(directive.recipient)) {
+                return result(
+                    'operator:trade_bundle_sell',
+                    false,
+                    `${directive.recipient} is blacklisted`
+                );
+            }
+            const inventory = sdk.getInventory();
+            const resolved = directive.items.map(spec => {
+                const pattern = exactPattern(spec.item);
+                const matches = inventory.filter(item => pattern.test(item.name));
+                const count = matches.reduce((sum, item) => sum + item.count, 0);
+                return {
+                    requested: spec,
+                    name: matches[0]?.name ?? spec.item,
+                    available: count,
+                };
+            });
+            const missing = resolved.filter(item => item.available < item.requested.amount);
+            if (missing.length > 0) {
+                return result(
+                    'operator:trade_bundle_sell',
+                    false,
+                    `Missing trade items: ${missing
+                        .map(item => `${item.name} ${item.available}/${item.requested.amount}`)
+                        .join(', ')}`
+                );
+            }
+            const essential = resolved.find(item => ESSENTIAL_TOOL_PATTERN.test(item.name));
+            if (essential) {
+                return result(
+                    'operator:trade_bundle_sell',
+                    false,
+                    `Refusing to trade essential item: ${essential.name}`
+                );
+            }
+            const priced = minimumSafeBundleAsk(
+                resolved.map(item => ({
+                    name: item.name,
+                    count: item.requested.amount,
+                })),
+                directive.priceGp
+            );
+            if (priced.unknownItems.length > 0) {
+                return result(
+                    'operator:trade_bundle_sell',
+                    false,
+                    `Cannot price trade items: ${priced.unknownItems.join(', ')}`
+                );
+            }
+            const safeAsk = priced.safeAskGp;
+            const trade = await bot.trade(exactPattern(directive.recipient), {
+                give: resolved.map(item => ({
+                    item: exactPattern(item.name),
+                    amount: item.requested.amount,
+                })),
+                want: [{ item: /^coins$/i, amount: safeAsk }],
+                timeout: 60_000,
+            });
+            const receivedValue = estimateOfferValue(trade.received).total;
+            const gaveValue = estimateOfferValue(trade.gave).total;
+            if (trade.success) recordTradeOutcome(receivedValue - gaveValue);
+            log('trade_result', {
+                requester: directive.recipient,
+                source: 'operator_trade_bundle_sell',
+                requestedPriceGp: directive.priceGp,
+                safeAskGp: safeAsk,
+                success: trade.success,
+                message: trade.message,
+                gave: trade.gave,
+                received: trade.received,
+                netProfitGp: receivedValue - gaveValue,
+            });
+            return result(
+                'operator:trade_bundle_sell',
+                trade.success,
+                `${trade.message} (safe ask ${safeAsk}gp)`
+            );
         }
         case 'equip_item': {
             const action = await bot.equipItem(exactPattern(directive.item));

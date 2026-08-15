@@ -7,6 +7,7 @@ import type {
     AiDecision,
     MarketSignal,
     MaterialReservation,
+    TradeOrder,
     StrategicAction,
     StrategicGoal,
 } from './aiDecision';
@@ -67,6 +68,7 @@ export interface OperatorPlanningRequest {
     developmentKnowledge: ManagedKnowledge[];
     assetMemory: AssetMemory;
     materialReservations: MaterialReservation[];
+    tradeOrders: TradeOrder[];
 }
 
 export interface OperatorDiagnosisRequest extends OperatorPlanningRequest {
@@ -88,7 +90,9 @@ ISOLATION:
 - Never output TypeScript, JavaScript, shell, eval, source code, or an arbitrary
   "script" string. A generated script means a declarative JSON workflow using
   only the directives below.
-- Do not handle player trades. The deterministic trading subsystem owns them.
+- Do not improvise player trades. Only a strategist-authorized tradeOrder may
+  become trade_bundle_sell, and the deterministic trading subsystem still owns
+  price correction, blacklist checks, atomic execution, and confirmation.
 - Do not attack players. Avoid combat when HP is below 60% unless escape is the
   goal. Never deposit or sell core tools needed by the workflow.
 
@@ -112,6 +116,9 @@ ROLE:
 - materialReservations are hard account-wide floors for persistent production
   commitments. Do not consume a reserved item for another workflow if doing so
   would reduce combined holdings below the reserved count.
+- tradeOrders are strategist-authorized typed player deals. Stage the exact
+  items from inventory/bank, then use trade_bundle_sell. Do not invent players,
+  items, or prices outside these orders.
 - A reusable workflow may have 1-30 bounded steps. Repetition is represented by
   repeatUntilComplete + a measurable completion condition + maxAttempts.
 - On diagnosis, distinguish normal resource respawn/waiting from pathing,
@@ -139,6 +146,8 @@ ALLOWED DIRECTIVES:
 - smith_product {product,bar} (uses the SDK smithing product selector)
 - equip_item {item}; set_combat_style {skill: Attack|Strength|Defence}
 - attack_npc {target}; wait {ticks 1-20}
+- trade_bundle_sell {recipient,items:[{item,amount}],priceGp}; deterministic
+  policy verifies ownership, value, blacklist, and both atomic trade screens.
 
 COMPLETION CONDITIONS:
 action_success, position, inventory, skill_level, skill_xp_delta, dialog_open,
@@ -314,5 +323,6 @@ export function operatorRequestFromStrategist(
             combinedHoldings: [...world.inventory, ...world.equipment, ...world.bank.items],
         },
         materialReservations: decision.reservations ?? [],
+        tradeOrders: decision.tradeOrders ?? [],
     };
 }

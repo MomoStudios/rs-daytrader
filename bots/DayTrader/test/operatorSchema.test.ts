@@ -200,4 +200,32 @@ describe('operator decision boundary', () => {
         });
         expect(parsed.workflow?.steps[0]?.directive.type).toBe('smith_product');
     });
+
+    test('allows atomic player bundle sale handoff', () => {
+        const parsed = parseOperatorDecision({
+            ...valid,
+            workflow: {
+                ...valid.workflow,
+                steps: [
+                    {
+                        id: 'trade',
+                        description: 'Sell held iron armor atomically.',
+                        directive: {
+                            type: 'trade_bundle_sell',
+                            recipient: 'Henryatkins',
+                            items: [
+                                { item: 'Iron platebody', amount: 1 },
+                                { item: 'Iron platelegs', amount: 1 },
+                            ],
+                            priceGp: 150,
+                        },
+                        completion: { type: 'action_success' },
+                        repeatUntilComplete: false,
+                        maxAttempts: 3,
+                    },
+                ],
+            },
+        });
+        expect(parsed.workflow?.steps[0]?.directive.type).toBe('trade_bundle_sell');
+    });
 });
