@@ -57,6 +57,8 @@ import {
     enqueueUniqueName,
     preparedPlanIsStale,
 } from './lib/runtimeScheduler';
+import { activeDevelopmentKnowledge } from './lib/developmentStore';
+import { updateAssetMemory } from './lib/assetMemory';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -82,6 +84,8 @@ let chatGeneration = 0;
 // Goals persist across restarts; concrete actions do not, because location,
 // inventory, and nearby conversation may have changed while offline.
 let activeAction: StrategicAction | null = null;
+let lastCharacterTraceAt = 0;
+let lastCharacterTraceSignature = '';
 
 await runScript(async ({ bot, sdk }) => {
     await bot.skipTutorial();
@@ -129,6 +133,7 @@ await runScript(async ({ bot, sdk }) => {
 
     while (true) {
         ingestNewChat();
+        maybeLogCharacterTrace();
 
         if (!brainAvailable && Date.now() - lastAiAttemptAt >= AI_RETRY_BACKOFF_MS) {
             lastAiAttemptAt = Date.now();
@@ -225,6 +230,8 @@ await runScript(async ({ bot, sdk }) => {
             result = await executeFallbackAction({ bot, sdk });
         }
         recordActionResult(result.action, result.success, result.message);
+        const postActionState = sdk.getState();
+        if (postActionState) updateAssetMemory(postActionState);
         if (!result.success) await sdk.waitForTicks(1).catch(() => undefined);
 
         // A failed skill usually means the goal needs a prerequisite or a
@@ -446,7 +453,14 @@ await runScript(async ({ bot, sdk }) => {
                 completedTrades: persistent.tradesCompleted,
                 estimatedTradeProfitGp: persistent.estimatedNetProfitGp,
             },
-            currentStrategy: loadStrategy().currentGoal,
+            currentStrategy: {
+                currentGoal: loadStrategy().currentGoal,
+                goalHistory: loadStrategy().goalHistory.slice(-20),
+                marketMemory: [...loadStrategy().marketMemory]
+                    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+                    .slice(0, 30),
+                activeHumanGuidance: activeHumanGuidance(),
+            },
             operatorStatus: {
                 workflow: loadOperatorState().workflow?.name ?? null,
                 stepIndex: loadOperatorState().stepIndex,
@@ -458,6 +472,8 @@ await runScript(async ({ bot, sdk }) => {
             recentActionResults: loadStrategy().recentActionResults.slice(-10),
             recentChat: [...recentChat],
             humanGuidance: activeHumanGuidance(),
+            developmentKnowledge: activeDevelopmentKnowledge('strategist'),
+            assetMemory: updateAssetMemory(world),
             tradeChatSilentForMs: Date.now() - persistent.lastTradeChatTime,
             advertisementDue: shouldAdvertise(),
         };
@@ -552,7 +568,61 @@ await runScript(async ({ bot, sdk }) => {
             listReusableWorkflows().slice(0, 20)
         );
         request.executionKnowledge = retrieveExecutionKnowledge(decision);
+        request.developmentKnowledge = activeDevelopmentKnowledge('operator');
+        const world = sdk.getState();
+        if (!world) throw new Error('Cannot build operator request without world state');
+        request.assetMemory = updateAssetMemory(world);
         return request;
+    }
+
+    function maybeLogCharacterTrace(): void {
+        const state = sdk.getState();
+        if (!state?.player) return;
+        const combatTarget =
+            state.player.combat.inCombat && state.player.combat.targetType === 'npc'
+                ? state.nearbyNpcs.find(npc => npc.index === state.player?.combat.targetIndex)?.name ?? null
+                : null;
+        const signature = JSON.stringify({
+            position: [state.player.worldX, state.player.worldZ, state.player.level],
+            skills: state.skills.map(skill => [skill.name, skill.baseLevel]),
+            equipment: state.equipment.map(item => [item.name, item.count]),
+            inventory: state.inventory.map(item => [item.name, item.count]),
+            combatTarget,
+        });
+        if (
+            signature === lastCharacterTraceSignature &&
+            Date.now() - lastCharacterTraceAt < 2 * 60 * 1000
+        ) {
+            return;
+        }
+        lastCharacterTraceAt = Date.now();
+        lastCharacterTraceSignature = signature;
+        log('character_trace', {
+            player: {
+                position: {
+                    x: state.player.worldX,
+                    z: state.player.worldZ,
+                    level: state.player.level,
+                },
+                hp: state.player.hp,
+                maxHp: state.player.maxHp,
+                combatLevel: state.player.combatLevel,
+            },
+            skills: state.skills.map(skill => ({
+                name: skill.name,
+                level: skill.baseLevel,
+                xp: skill.experience,
+            })),
+            inventory: state.inventory.map(item => ({ name: item.name, count: item.count })),
+            equipment: state.equipment.map(item => ({ name: item.name, count: item.count })),
+            combat: {
+                inCombat: state.player.combat.inCombat,
+                target: combatTarget,
+                style: state.combatStyle?.styles.find(
+                    style => style.index === state.combatStyle?.currentStyle
+                )?.name,
+            },
+        });
     }
 
     async function executeChatActions(decision: AiDecision): Promise<void> {

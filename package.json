@@ -8,6 +8,7 @@
     "fetch-collision-data": "bun sdk/fetch-collision-data.ts",
     "test": "bun test sdk/test server/webclient/src/bot server/webclient/src/util server/webclient/src/lite",
     "observe:daytrader": "bun bots/DayTrader/observer/server.ts",
+    "develop:daytrader": "bun bots/DayTrader/development/runner.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:webclient": "tsc --noEmit -p server/webclient/tsconfig.json"
   },

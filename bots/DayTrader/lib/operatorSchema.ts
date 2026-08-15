@@ -322,7 +322,7 @@ function completion(value: unknown): CompletionCondition {
     }
 }
 
-function workflow(value: unknown): OperatorWorkflow | null {
+export function parseOperatorWorkflow(value: unknown): OperatorWorkflow | null {
     if (value === null) return null;
     const data = record(value, 'workflow');
     if (!Array.isArray(data.steps) || data.steps.length < 1 || data.steps.length > 30) {
@@ -382,7 +382,7 @@ export function parseOperatorDecision(value: unknown): OperatorDecision {
         };
     }
 
-    const parsedWorkflow = workflow(data.workflow);
+    const parsedWorkflow = parseOperatorWorkflow(data.workflow);
     if (!parsedWorkflow && !escalation) throw new Error('operator decision requires a workflow or escalation');
     if (
         parsedWorkflow &&

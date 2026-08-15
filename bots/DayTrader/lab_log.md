@@ -497,3 +497,80 @@ The main controller continues under `run-main-loop.sh`.
   strategist/operator plans.
 - The prepared plan installed at a fight boundary and immediately selected the
   new style and next target.
+
+## Session 10 (omniscient development agent)
+
+### Purpose and isolation
+- Added a third independent Copilot process using GPT-5.6 Terra with medium
+  reasoning.
+- It has no model tools and cannot execute code, shell commands, SDK methods,
+  or arbitrary file writes.
+- Deterministic host retrieval gives it read-only evidence from the complete
+  server content/scripts, engine implementation, wiki, learnings, and
+  DayTrader framework.
+- Its output is limited to validated findings, managed context notes, and
+  existing-schema declarative operator workflows.
+
+### Multi-hour game traces
+- `gameTrace.ts` reads up to four hours / 4,000 recent events from the large
+  JSONL audit log with a bounded 48MB reverse read.
+- Traces include strategist conclusions, market signals, goals, operator plans,
+  steps, stalls, escalations, trades/profit, errors, action success rates, and
+  repeated failures.
+- `character_trace` events periodically capture coordinates, HP/combat level,
+  every skill/XP value, inventory, equipment, active combat target, and style.
+- Raw game chat text is removed from development traces; strategist-derived
+  market signals preserve relevant economic interpretation.
+
+### Server-code research
+- Development review is two-phase:
+  1. Terra selects 1-12 literal research queries from trace failures/goals.
+  2. Host-side `rg` searches trusted text sources and returns bounded
+     path/line snippets before Terra produces the final review.
+- Query schema has an automatic repair pass when Terra returns too many or
+  malformed queries.
+
+### Managed knowledge and workflows
+- Evidence-backed notes are persisted in `data/development.json` with audience,
+  topic, confidence, source refs, review ID, and active/superseded state.
+- Active strategist/operator notes are injected into every corresponding AI
+  planning context.
+- Workflow proposals must pass the full operator schema and are stored in the
+  existing reusable workflow registry.
+- The development worker runs in its own supervised process every 30 minutes.
+  Observer requests can queue an immediate review with an optional trusted
+  focus prompt.
+
+### Observer
+- Added a Development tab showing Terra status, next/last review, trace window,
+  review health/summary, evidence sources, findings, recommendations, and all
+  active published knowledge.
+- The Run review form supports optional prompts such as investigating a
+  missing capability or evaluating equipment upgrades.
+
+### Live reviews
+- Initial periodic review found copper-targeting drift and recurring
+  continuation-dialog stalls, then published explicit copper-rock and bronze
+  smelting knowledge plus two workflows.
+- An on-demand bronze-pickaxe/gear review found Bob's Brilliant Axes at
+  `(3230, 3203)`, verified stock 5 and price 1 gp, and published the exact
+  recovery route to both agents.
+- The same review detected furnace interactions were too fast and published
+  pacing/target-name guidance. It correctly declined an iron weapon upgrade
+  because the account had only 50 coins versus documented prices of 91/112 gp.
+
+## Session 11 (persistent account and strategy memory)
+
+- Added `assets.json`: current inventory/equipment plus the last observed live
+  bank snapshot and timestamp, with normalized combined holdings.
+- Asset memory updates after every bounded action and whenever either AI builds
+  context.
+- Deposited ingredients remain visible to both agents. Live verification
+  showed 19 banked Tin ore and 28 combined Tin while inventory held no tin.
+- `strategy.json` now retains bounded goal history and aggregated market-memory
+  signals with first/last seen timestamps and observation counts.
+- Strategist instructions explicitly reconcile current inventory with banked
+  holdings and preserve long production chains across prerequisite goals.
+- Live verification completed 10 Bronze bars using banked tin, then advanced
+  from the remembered bronze-production objective toward Smithing 15 and the
+  retained iron-platebody demand.

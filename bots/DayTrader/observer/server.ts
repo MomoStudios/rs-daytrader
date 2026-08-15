@@ -2,16 +2,22 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { BotSDK, deriveGatewayUrl } from '../../../sdk/index';
+import { randomUUID } from 'crypto';
 import {
     addHumanGuidance,
     listHumanGuidance,
 } from '../lib/humanGuidance';
+import {
+    enqueueDevelopmentReview,
+    getDevelopmentState,
+} from '../lib/developmentStore';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOT_DIR = join(__dirname, '..');
 const DATA_DIR = join(BOT_DIR, 'data');
 const ENV_PATH = join(BOT_DIR, 'bot.env');
 const PORT = Number(process.env.DAYTRADER_OBSERVER_PORT ?? 4317);
+const CONTROL_TOKEN = randomUUID();
 
 function loadEnv(): Record<string, string> {
     const result: Record<string, string> = {};
@@ -121,6 +127,7 @@ function statusPayload(): object {
     const strategy = readJson('strategy.json') as any;
     const operator = readJson('operator.json') as any;
     const collection = readJson('collection.json') as any;
+    const development = getDevelopmentState();
     const player = state?.player;
     return {
         now: Date.now(),
@@ -211,6 +218,23 @@ function statusPayload(): object {
                 : [],
         },
         guidance: listHumanGuidance().slice(-20).reverse(),
+        development: {
+            running: development.running,
+            lastReviewAt: development.lastReviewAt,
+            nextReviewAt: development.nextReviewAt,
+            requests: development.requests.slice(-10).reverse(),
+            latestReview: development.reviews.at(-1) ?? null,
+            activeKnowledge: development.knowledge
+                .filter(
+                    note =>
+                        note.status === 'active' &&
+                        (note.expiresAt === null ||
+                            note.expiresAt === undefined ||
+                            note.expiresAt > Date.now())
+                )
+                .slice(-30)
+                .reverse(),
+        },
         chat: readableChat(),
         events: recentEvents(),
     };
@@ -261,6 +285,7 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
       <button class="tab" data-tab="agents">Agents</button>
       <button class="tab" data-tab="workflow">Workflow</button>
       <button class="tab" data-tab="chat">Chat <span class="badge" id="chat-count">0</span></button>
+      <button class="tab" data-tab="development">Development</button>
       <button class="tab" data-tab="events">Events</button>
     </nav>
     <form class="command-bar" id="guidance-form">
@@ -292,6 +317,18 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
         <p class="panel-subtitle">Accumulated public, private, self, and game messages</p>
         <div class="card"><div class="chat-log" id="chat"></div></div>
       </section>
+      <section class="panel-page" data-panel="development">
+        <h1 class="panel-title">Development agent</h1>
+        <p class="panel-subtitle">GPT-5.6 Terra reviews multi-hour traces and trusted server implementation evidence</p>
+        <form class="card command-bar" id="development-form">
+          <textarea id="development-input" maxlength="1000" placeholder="Optional review focus… e.g. Find the exact bronze pickaxe acquisition route and publish it to the operator."></textarea>
+          <button type="submit">Run review</button>
+          <div class="command-status" id="development-status">Reviews also run automatically every 30 minutes.</div>
+        </form>
+        <div class="card" id="development-summary"></div>
+        <div class="card" id="development-findings"></div>
+        <div class="card" id="development-knowledge"></div>
+      </section>
       <section class="panel-page" data-panel="events">
         <h1 class="panel-title">Audit stream</h1>
         <p class="panel-subtitle">Agent decisions, workflow repairs, actions, and trade outcomes</p>
@@ -301,6 +338,7 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
   </aside>
 </main>
 <script>
+const controlToken=${JSON.stringify(CONTROL_TOKEN)};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ago=t=>!t?'—':Math.max(0,Math.round((Date.now()-t)/1000))+'s ago';
 const compact=v=>JSON.stringify(v??{}).replace(/[{}"]/g,'').replace(/,/g,', ');
@@ -315,7 +353,13 @@ document.querySelectorAll('.tab').forEach(x=>x.addEventListener('click',()=>show
 document.querySelector('#guidance-form').addEventListener('submit',async event=>{
  event.preventDefault();const input=document.querySelector('#guidance-input'),status=document.querySelector('#guidance-status'),text=input.value.trim();
  if(!text)return;status.className='command-status';status.textContent='Sending…';
- try{const response=await fetch('/api/instructions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});const body=await response.json();if(!response.ok)throw new Error(body.error||'Request failed');input.value='';status.className='command-status good';status.textContent='Queued for strategist: '+body.instruction.id}
+ try{const response=await fetch('/api/instructions',{method:'POST',headers:{'content-type':'application/json','x-observer-token':controlToken},body:JSON.stringify({text})});const body=await response.json();if(!response.ok)throw new Error(body.error||'Request failed');input.value='';status.className='command-status good';status.textContent='Queued for strategist: '+body.instruction.id}
+ catch(error){status.className='command-status bad';status.textContent=String(error)}
+});
+document.querySelector('#development-form').addEventListener('submit',async event=>{
+ event.preventDefault();const input=document.querySelector('#development-input'),status=document.querySelector('#development-status'),prompt=input.value.trim();
+ status.className='command-status';status.textContent='Queueing development review…';
+ try{const response=await fetch('/api/development-reviews',{method:'POST',headers:{'content-type':'application/json','x-observer-token':controlToken},body:JSON.stringify({prompt})});const body=await response.json();if(!response.ok)throw new Error(body.error||'Request failed');input.value='';status.className='command-status good';status.textContent='Queued: '+body.request.id}
  catch(error){status.className='command-status bad';status.textContent=String(error)}
 });
 function render(d){
@@ -330,6 +374,10 @@ function render(d){
  const o=d.operator;
  document.querySelector('#operator').innerHTML='<h2>Operator · '+esc(d.runtime.operatorModel)+' / '+esc(d.runtime.reasoningEffort)+'</h2><p class="summary">'+esc(o.summary||'Waiting for execution plan…')+'</p>'+(o.lastFailure?'<div class="bad small">Last failure: '+esc(o.lastFailure)+'</div>':'<div class="good small">No active failure</div>')+(o.escalation?'<div class="blocker warning"><b>Escalation · '+esc(o.escalation.reason)+'</b><div class="small">'+esc(o.escalation.question)+'</div></div>':'')+(o.blockers||[]).map(x=>'<div class="blocker"><b>'+esc(x.kind)+' · '+esc(x.target)+'</b><div class="small muted">'+esc(x.evidence)+'</div></div>').join('');
  document.querySelector('#guidance').innerHTML='<h2>Human guidance</h2>'+((d.guidance||[]).length?(d.guidance||[]).map(x=>'<div class="signal"><span class="confidence '+(x.status==='pending'?'bad':x.status==='resolved'?'muted':'good')+'">'+esc(x.status==='applied'?'active':x.status)+'</span><b>'+new Date(x.createdAt).toLocaleTimeString()+'</b><div class="small">'+esc(x.text)+'</div>'+(x.appliedSummary?'<div class="small muted">Applied: '+esc(x.appliedSummary)+'</div>':'')+'</div>').join(''):'<div class="muted small">No human guidance submitted.</div>');
+ const dev=d.development||{},review=dev.latestReview,reviewBody=review?.review;
+ document.querySelector('#development-summary').innerHTML='<h2>Review status · gpt-5.6-terra / medium</h2><div class="grid2"><div class="metric"><b>'+(dev.running?'running':'idle')+'</b><span>agent state</span></div><div class="metric"><b>'+ago(dev.lastReviewAt)+'</b><span>last review</span></div></div>'+(reviewBody?'<div class="goal">'+esc(reviewBody.health)+'</div><p class="summary">'+esc(reviewBody.summary)+'</p><div class="small muted">Trace: '+esc(review.traceWindow.eventCount)+' events / '+esc(review.traceWindow.hours)+'h · '+esc(review.trigger)+' · '+new Date(review.createdAt).toLocaleString()+'</div><div style="margin-top:8px">'+(review.evidenceSources||[]).map(x=>'<span class="tag">'+esc(x)+'</span>').join('')+'</div>':'<div class="muted small">No completed development review yet.</div>');
+ document.querySelector('#development-findings').innerHTML='<h2>Findings</h2>'+((reviewBody?.findings||[]).length?(reviewBody.findings||[]).map(x=>'<div class="blocker '+(x.severity==='high'?'warning':'')+'"><span class="confidence">'+esc(x.severity)+'</span><b>'+esc(x.kind)+' · '+esc(x.title)+'</b><div class="small muted">'+esc(x.diagnosis)+'</div><div class="small">'+esc(x.recommendation)+'</div><div>'+((x.evidenceRefs||[]).map(r=>'<span class="tag">'+esc(r)+'</span>').join(''))+'</div></div>').join(''):'<div class="muted small">'+esc(reviewBody?.noActionReason||'No findings yet.')+'</div>');
+ document.querySelector('#development-knowledge').innerHTML='<h2>Published managed knowledge</h2>'+((dev.activeKnowledge||[]).length?(dev.activeKnowledge||[]).map(x=>'<div class="signal"><span class="confidence">'+esc(x.confidence)+'%</span><b>'+esc(x.audience)+' · '+esc(x.topic)+'</b><div class="small">'+esc(x.content)+'</div><div>'+((x.evidenceRefs||[]).map(r=>'<span class="tag">'+esc(r)+'</span>').join(''))+'</div></div>').join(''):'<div class="muted small">No managed knowledge published yet.</div>');
  const w=o.workflow; let wh='<h2>Execution workflow</h2>';
  if(w){const pct=Math.round(100*Math.min(w.stepIndex,w.steps.length)/Math.max(1,w.steps.length));wh+='<div class="workflow-head"><b>'+esc(w.name)+' v'+esc(w.version)+'</b><span class="small muted">step '+(w.stepIndex+1)+'/'+w.steps.length+' · attempt '+w.stepAttempts+'</span></div><div class="small muted">'+esc(w.goal)+'</div><div class="progress"><i style="width:'+pct+'%"></i></div>'+w.steps.map((x,i)=>'<div class="step '+(i<w.stepIndex?'done':i===w.stepIndex?'active':'future')+'"><b>'+(i<w.stepIndex?'✓ ':i===w.stepIndex?'▶ ':'○ ')+esc(x.description)+'</b><div class="step-code">'+esc(compact(x.directive))+' → '+esc(compact(x.completion))+'</div></div>').join('')}else wh+='<div class="muted small">No active workflow.</div>';document.querySelector('#workflow').innerHTML=wh;
  document.querySelector('#collection').innerHTML='<h2>Collection portfolio</h2><div class="grid2"><div class="metric"><b>'+esc(d.collection.observedCount)+'</b><span>items ever observed</span></div><div class="metric"><b>33</b><span>portfolio targets</span></div></div><div style="margin-top:8px">'+(d.collection.recentlyObserved||[]).map(x=>'<span class="tag">'+esc(x.name)+' ×'+esc(x.maxHeld)+'</span>').join('')+'</div>';
@@ -356,6 +404,23 @@ const server = Bun.serve({
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer',
         };
+        const isControlRequest =
+            request.method === 'POST' &&
+            (url.pathname === '/api/instructions' ||
+                url.pathname === '/api/development-reviews');
+        if (isControlRequest) {
+            const origin = request.headers.get('origin');
+            const expectedOrigin = `http://127.0.0.1:${PORT}`;
+            if (
+                request.headers.get('x-observer-token') !== CONTROL_TOKEN ||
+                (origin !== null && origin !== expectedOrigin)
+            ) {
+                return Response.json(
+                    { error: 'Forbidden observer control request' },
+                    { status: 403, headers }
+                );
+            }
+        }
         if (url.pathname === '/api/status') {
             return Response.json(statusPayload(), { headers });
         }
@@ -372,6 +437,24 @@ const server = Bun.serve({
                             : '';
                     const instruction = addHumanGuidance(text);
                     return Response.json({ instruction }, { status: 201, headers });
+                })
+                .catch(error =>
+                    Response.json({ error: String(error) }, { status: 400, headers })
+                );
+        }
+        if (url.pathname === '/api/development-reviews' && request.method === 'POST') {
+            return request
+                .json()
+                .then(body => {
+                    const prompt =
+                        typeof body === 'object' &&
+                        body !== null &&
+                        'prompt' in body &&
+                        typeof body.prompt === 'string'
+                            ? body.prompt
+                            : '';
+                    const queued = enqueueDevelopmentReview(prompt);
+                    return Response.json({ request: queued }, { status: 201, headers });
                 })
                 .catch(error =>
                     Response.json({ error: String(error) }, { status: 400, headers })

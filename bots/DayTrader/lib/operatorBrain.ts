@@ -14,6 +14,8 @@ import type { OperatorRuntimeState } from './operatorStore';
 import type { ProgressSnapshot, StallAssessment } from './operatorWatchdog';
 import type { StoredWorkflow } from './workflowStore';
 import type { ExecutionKnowledge } from './executionKnowledge';
+import type { ManagedKnowledge } from './developmentStore';
+import type { AssetMemory } from './assetMemory';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNTIME_DIR = join(__dirname, '..', 'data', 'copilot-operator-runtime');
@@ -56,6 +58,8 @@ export interface OperatorPlanningRequest {
     world: OperatorWorldObservation;
     knownWorkflows: StoredWorkflow[];
     executionKnowledge: ExecutionKnowledge[];
+    developmentKnowledge: ManagedKnowledge[];
+    assetMemory: AssetMemory;
 }
 
 export interface OperatorDiagnosisRequest extends OperatorPlanningRequest {
@@ -91,6 +95,13 @@ ROLE:
 - executionKnowledge contains trusted, server-specific wiki and tested learning
   documents. Prefer it over generic RuneScape memory for requirements,
   locations, quest facts, and mechanics. Cite its facts in blocker evidence.
+- developmentKnowledge contains active evidence-backed notes from the
+  omniscient development reviewer. Use these notes to resolve prior capability
+  gaps and prefer their cited server-specific facts over generic memory.
+- assetMemory contains current inventory/equipment plus last-known bank
+  contents. Use combinedHoldings for prerequisite planning. If a required item
+  is remembered in the bank, plan a bank withdrawal rather than declaring the
+  item unavailable.
 - A reusable workflow may have 1-30 bounded steps. Repetition is represented by
   repeatUntilComplete + a measurable completion condition + maxAttempts.
 - On diagnosis, distinguish normal resource respawn/waiting from pathing,
@@ -281,5 +292,15 @@ export function operatorRequestFromStrategist(
         world,
         knownWorkflows,
         executionKnowledge: [],
+        developmentKnowledge: [],
+        assetMemory: {
+            inventory: world.inventory,
+            equipment: world.equipment,
+            bank: world.bank.items,
+            inventoryObservedAt: world.now,
+            bankObservedAt: world.bank.open ? world.now : null,
+            bankObservationSource: world.bank.open ? 'live_open_bank' : 'never_observed',
+            combinedHoldings: [...world.inventory, ...world.equipment, ...world.bank.items],
+        },
     };
 }

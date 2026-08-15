@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import type { AiDecision, StrategicGoal } from './aiDecision';
+import type { MarketSignal } from './aiDecision';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -12,6 +13,12 @@ export interface StrategyState {
     currentGoal: StrategicGoal | null;
     lastDecision: AiDecision | null;
     lastPlannedAt: number;
+    goalHistory: Array<{
+        goal: StrategicGoal;
+        summary: string;
+        at: number;
+    }>;
+    marketMemory: Array<MarketSignal & { firstSeenAt: number; lastSeenAt: number; observations: number }>;
     recentActionResults: Array<{
         at: number;
         action: string;
@@ -25,6 +32,8 @@ function defaultState(): StrategyState {
         currentGoal: null,
         lastDecision: null,
         lastPlannedAt: 0,
+        goalHistory: [],
+        marketMemory: [],
         recentActionResults: [],
     };
 }
@@ -66,6 +75,49 @@ export function recordDecision(decision: AiDecision): void {
     current.currentGoal = decision.goal;
     current.lastDecision = decision;
     current.lastPlannedAt = Date.now();
+    const previousGoal = current.goalHistory.at(-1)?.goal;
+    if (
+        !previousGoal ||
+        previousGoal.kind !== decision.goal.kind ||
+        previousGoal.target.toLowerCase() !== decision.goal.target.toLowerCase() ||
+        previousGoal.targetValue !== decision.goal.targetValue
+    ) {
+        current.goalHistory.push({
+            goal: decision.goal,
+            summary: decision.summary,
+            at: Date.now(),
+        });
+        if (current.goalHistory.length > 100) {
+            current.goalHistory.splice(0, current.goalHistory.length - 100);
+        }
+    }
+    for (const signal of decision.marketSignals ?? []) {
+        const existing = current.marketMemory.find(
+            item =>
+                item.kind === signal.kind &&
+                item.topic.toLowerCase() === signal.topic.toLowerCase()
+        );
+        if (existing) {
+            existing.lastSeenAt = Date.now();
+            existing.observations += 1;
+            existing.confidence = Math.max(existing.confidence, signal.confidence);
+            existing.evidence = signal.evidence;
+            existing.implication = signal.implication;
+            existing.participants = [...new Set([...existing.participants, ...signal.participants])].slice(0, 10);
+        } else {
+            current.marketMemory.push({
+                ...signal,
+                firstSeenAt: Date.now(),
+                lastSeenAt: Date.now(),
+                observations: 1,
+            });
+        }
+    }
+    if (current.marketMemory.length > 100) {
+        current.marketMemory
+            .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+            .splice(100);
+    }
     persist();
 }
 

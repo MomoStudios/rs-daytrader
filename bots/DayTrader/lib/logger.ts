@@ -29,6 +29,9 @@ export type LogEventType =
     | 'operator_step'
     | 'operator_stall'
     | 'operator_escalation'
+    | 'development_review'
+    | 'development_error'
+    | 'character_trace'
     | 'error'
     | 'note';
 

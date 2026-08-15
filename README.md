@@ -9,6 +9,9 @@ server.
 - **Operator AI** converts goals into bounded declarative workflows, executes
   them through deterministic game primitives, diagnoses stalls, and escalates
   strategic questions.
+- **Development AI** uses GPT-5.6 Terra to review multi-hour traces against the
+  complete server implementation every 30 minutes or on demand, publishing
+  evidence-backed knowledge and validated workflows to the other agents.
 - **Deterministic policy** retains control of prices, inventory ownership,
   essential tools, atomic trades, confirmation screens, and all executable
   actions.
@@ -41,6 +44,7 @@ Visual local operation:
 
 ```sh
 bash bots/DayTrader/run-main-loop.sh
+bash bots/DayTrader/run-development-agent.sh
 bun run observe:daytrader
 # Open http://127.0.0.1:4317 and keep the tab open.
 ```
