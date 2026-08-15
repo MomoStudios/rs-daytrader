@@ -111,6 +111,32 @@ export async function executeOperatorDirective(
             const action = await bot.buyFromShop(exactPattern(directive.item), directive.amount);
             return result('operator:shop_buy', action.success, action.message);
         }
+        case 'equip_item': {
+            const action = await bot.equipItem(exactPattern(directive.item));
+            return result('operator:equip_item', action.success, action.message);
+        }
+        case 'set_combat_style': {
+            const style = sdk
+                .getState()
+                ?.combatStyle?.styles.find(candidate =>
+                    candidate.trainsSkills.includes(directive.skill)
+                );
+            if (!style) {
+                return result(
+                    'operator:set_combat_style',
+                    false,
+                    `No equipped-weapon style trains ${directive.skill}`
+                );
+            }
+            const action = await sdk.sendSetCombatStyle(style.index);
+            return result(
+                'operator:set_combat_style',
+                action.success,
+                action.success
+                    ? `Selected ${style.name} to train ${directive.skill}`
+                    : action.message
+            );
+        }
         case 'attack_npc': {
             const state = sdk.getState();
             if (!state?.player) return result('operator:attack_npc', false, 'No player state');

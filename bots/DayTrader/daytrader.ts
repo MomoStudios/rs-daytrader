@@ -39,9 +39,13 @@ import {
     type OperatorPlanningRequest,
     type OperatorWorldObservation,
 } from './lib/operatorBrain';
-import { loadOperatorState } from './lib/operatorStore';
+import { loadOperatorState, resetOperatorWorkflow } from './lib/operatorStore';
 import { listReusableWorkflows } from './lib/workflowStore';
 import { retrieveExecutionKnowledge } from './lib/executionKnowledge';
+import {
+    markHumanGuidanceApplied,
+    pendingHumanGuidance,
+} from './lib/humanGuidance';
 
 const TRADE_REQUEST_POLL_MS = 8_000;
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
@@ -116,8 +120,12 @@ await runScript(async ({ bot, sdk }) => {
 
         const strategy = loadStrategy();
         const operatorRuntime = loadOperatorState();
+        const pendingGuidance = pendingHumanGuidance();
         const planningDue = shouldRequestAiPlan({
-            pendingChatForAi: pendingChatForAi || !!operatorRuntime.pendingEscalation,
+            pendingChatForAi:
+                pendingChatForAi ||
+                pendingGuidance.length > 0 ||
+                !!operatorRuntime.pendingEscalation,
             hasActiveAction: !!activeAction || !!operatorRuntime.workflow,
             now: Date.now(),
             lastPlannedAt: strategy.lastPlannedAt,
@@ -140,8 +148,11 @@ await runScript(async ({ bot, sdk }) => {
         if (brainAvailable && planningDue && backoffElapsed) {
             lastAiAttemptAt = Date.now();
             try {
-                const decision = await brain.decide(buildWorldObservation());
+                const observation = buildWorldObservation();
+                const guidanceIds = observation.humanGuidance.map(instruction => instruction.id);
+                const decision = await brain.decide(observation);
                 recordDecision(decision);
+                markHumanGuidanceApplied(guidanceIds, decision.summary);
                 activeAction = decision.nextAction;
                 pendingChatForAi = false;
                 plannedThisIteration = true;
@@ -157,6 +168,10 @@ await runScript(async ({ bot, sdk }) => {
                 if (operatorAvailable) {
                     try {
                         const request = buildOperatorRequest(decision);
+                        // A new strategic decision owns execution immediately;
+                        // never let an obsolete workflow keep running if the
+                        // replacement operator response fails validation.
+                        resetOperatorWorkflow();
                         await operator.plan(request, { bot, sdk });
                         // The operator workflow now owns execution. Keep the
                         // strategist action only as a fallback when operator
@@ -167,20 +182,21 @@ await runScript(async ({ bot, sdk }) => {
                     }
                 }
 
-                if (
-                    operatorAvailable &&
-                    !plannedThisIteration &&
-                    strategy.lastDecision &&
-                    operator.needsAudit()
-                ) {
-                    try {
-                        await operator.plan(buildOperatorRequest(strategy.lastDecision), { bot, sdk });
-                    } catch (error) {
-                        log('ai_error', { stage: 'operator_audit', error: String(error) });
-                    }
-                }
             } catch (error) {
                 log('ai_error', { stage: 'decision', error: String(error) });
+            }
+        }
+
+        if (
+            operatorAvailable &&
+            !plannedThisIteration &&
+            strategy.lastDecision &&
+            operator.needsAudit()
+        ) {
+            try {
+                await operator.plan(buildOperatorRequest(strategy.lastDecision), { bot, sdk });
+            } catch (error) {
+                log('ai_error', { stage: 'operator_audit', error: String(error) });
             }
         }
 
@@ -324,6 +340,7 @@ await runScript(async ({ bot, sdk }) => {
             collectionPortfolio: updateCollectionStatus(world.inventory),
             recentActionResults: loadStrategy().recentActionResults.slice(-10),
             recentChat: [...recentChat],
+            humanGuidance: pendingHumanGuidance(),
             tradeChatSilentForMs: Date.now() - persistent.lastTradeChatTime,
             advertisementDue: shouldAdvertise(),
         };
@@ -396,6 +413,17 @@ await runScript(async ({ bot, sdk }) => {
                     price: item.buyPrice,
                 })),
             },
+            combatStyle: world.combatStyle
+                ? {
+                      currentStyle: world.combatStyle.currentStyle,
+                      weaponName: world.combatStyle.weaponName,
+                      styles: world.combatStyle.styles.map(style => ({
+                          index: style.index,
+                          name: style.name,
+                          trainsSkills: style.trainsSkills,
+                      })),
+                  }
+                : null,
             collectionPortfolio: updateCollectionStatus(world.inventory),
         };
     }

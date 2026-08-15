@@ -40,6 +40,11 @@ export interface OperatorWorldObservation {
     interface: { open: boolean; id: number; options: string[] };
     bank: { open: boolean; items: Array<{ name: string; count: number }> };
     shop: { open: boolean; title: string; items: Array<{ name: string; count: number; price: number }> };
+    combatStyle: {
+        currentStyle: number;
+        weaponName: string;
+        styles: Array<{ index: number; name: string; trainsSkills: string[] }>;
+    } | null;
     collectionPortfolio: CollectionStatus;
 }
 
@@ -93,6 +98,12 @@ ROLE:
   stale state, and unsupported capabilities.
 - If a quest/access path is not sufficiently known from state, escalate
   missing_capability instead of hallucinating exact quest steps.
+- Never return a workflow made only of wait steps. Waiting is only a bounded
+  sub-step for a known respawn or animation. If blocked, choose productive
+  capability building (including safe combat) or escalate.
+- For balanced melee training, select the style that trains the lowest of
+  Attack, Strength, and Defence, then attack safe NPCs. Equip better owned
+  weapons/armor when doing so is clearly an upgrade.
 
 ALLOWED DIRECTIVES:
 - strategic_action: one existing bounded action (train/travel/sell_excess/pickup/wait)
@@ -104,6 +115,7 @@ ALLOWED DIRECTIVES:
 - pickup {item}; use_item_on_loc {item,location}
 - bank_open; bank_close; bank_deposit/bank_withdraw {item,amount}
 - shop_open {npc}; shop_close; shop_buy {item,amount}
+- equip_item {item}; set_combat_style {skill: Attack|Strength|Defence}
 - attack_npc {target}; wait {ticks 1-20}
 
 COMPLETION CONDITIONS:

@@ -27,6 +27,10 @@ const GOAL_DOCS: Array<{ pattern: RegExp; docs: string[] }> = [
     { pattern: /dragon slayer/i, docs: ['wiki/quests/dragon-slayer.md'] },
     { pattern: /iron|steel|mithril|adamant|smith/i, docs: ['wiki/skills/smithing.md', 'learnings/smithing.md'] },
     { pattern: /bank|stock|inventory/i, docs: ['learnings/banking.md'] },
+    {
+        pattern: /combat|attack|strength|defen[cs]e|goblin|cow|chicken/i,
+        docs: ['learnings/combat.md', 'learnings/walking.md'],
+    },
 ];
 
 export function retrieveExecutionKnowledge(decision: AiDecision): ExecutionKnowledge[] {

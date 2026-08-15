@@ -2,6 +2,10 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } fro
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { BotSDK, deriveGatewayUrl } from '../../../sdk/index';
+import {
+    addHumanGuidance,
+    listHumanGuidance,
+} from '../lib/humanGuidance';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOT_DIR = join(__dirname, '..');
@@ -206,6 +210,7 @@ function statusPayload(): object {
                       .map(([name, value]) => ({ name, ...(value as object) }))
                 : [],
         },
+        guidance: listHumanGuidance().slice(-20).reverse(),
         chat: readableChat(),
         events: recentEvents(),
     };
@@ -226,10 +231,11 @@ header{height:56px;display:flex;align-items:center;justify-content:space-between
 main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1.7fr) minmax(390px,1fr);gap:1px;background:var(--line)}
 .game-shell{position:relative;background:#000;min-width:0}.game-shell iframe{border:0;width:100%;height:100%;display:block;background:#000}
 .game-label{position:absolute;left:12px;top:12px;z-index:2;padding:6px 9px;border:1px solid #ffffff22;border-radius:6px;background:#050707cc;color:#c9d2cd;font-size:11px;pointer-events:none}
-.dash{overflow:hidden;background:var(--bg);display:grid;grid-template-rows:auto 1fr;min-height:0}
+.dash{overflow:hidden;background:var(--bg);display:grid;grid-template-rows:auto auto 1fr;min-height:0}
 .tabs{display:flex;gap:5px;padding:10px;border-bottom:1px solid var(--line);background:#0c1112;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}
 .tab{appearance:none;border:1px solid var(--line);background:#101617;color:var(--muted);border-radius:7px;padding:7px 10px;font:600 11px/1 inherit;white-space:nowrap;cursor:pointer}.tab:hover{color:var(--text);border-color:#3b4b4c}.tab.active{background:#252211;border-color:#6b5727;color:#f2d07e}.badge{display:inline-block;min-width:17px;margin-left:4px;padding:1px 5px;border-radius:10px;background:#263233;color:#dce5e1;font-size:9px;text-align:center}
 .panels{overflow:auto;padding:12px;min-height:0}.panel-page{display:none;gap:10px;align-content:start}.panel-page.active{display:grid}.panel-title{margin:2px 2px 0;font-size:18px}.panel-subtitle{margin:-4px 2px 4px;color:var(--muted);font-size:11px}
+.command-bar{padding:9px 10px;border-bottom:1px solid var(--line);background:#0a0f10;display:grid;grid-template-columns:1fr auto;gap:7px}.command-bar textarea{resize:vertical;min-height:42px;max-height:130px;border:1px solid var(--line);border-radius:7px;background:#070b0c;color:var(--text);padding:8px 9px;font:12px/1.35 inherit;outline:none}.command-bar textarea:focus{border-color:#7b652e;box-shadow:0 0 0 2px #d4ad5218}.command-bar button{border:1px solid #7b652e;border-radius:7px;background:#302914;color:#f2d07e;padding:0 12px;font-weight:700;cursor:pointer}.command-status{grid-column:1/-1;font-size:10px;color:var(--muted);min-height:12px}.command-status.good{color:var(--green)}.command-status.bad{color:var(--red)}
 .card{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:10px;padding:12px;box-shadow:0 8px 22px #0003}
 .card h2{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin:0 0 10px}.summary{font-size:14px;line-height:1.45}.muted{color:var(--muted)}.small{font-size:11px}
 .goal{font-size:17px;font-weight:700;margin-bottom:4px}.tag{display:inline-block;padding:3px 7px;margin:2px 3px 2px 0;border:1px solid var(--line);border-radius:999px;font-size:10px;color:#b9c5c0;background:#0b1011}
@@ -257,6 +263,11 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
       <button class="tab" data-tab="chat">Chat <span class="badge" id="chat-count">0</span></button>
       <button class="tab" data-tab="events">Events</button>
     </nav>
+    <form class="command-bar" id="guidance-form">
+      <textarea id="guidance-input" maxlength="1000" placeholder="Guide DayTrader… e.g. Character is stuck—diagnose and fix it."></textarea>
+      <button type="submit">Send guidance</button>
+      <div class="command-status" id="guidance-status">Trusted local guidance goes to the strategist, then the operator.</div>
+    </form>
     <div class="panels">
       <section class="panel-page active" data-panel="overview">
         <h1 class="panel-title">Live overview</h1>
@@ -269,6 +280,7 @@ main{height:calc(100vh - 56px);display:grid;grid-template-columns:minmax(620px,1
         <div class="card" id="strategist"></div>
         <div class="card" id="signals"></div>
         <div class="card" id="operator"></div>
+        <div class="card" id="guidance"></div>
       </section>
       <section class="panel-page" data-panel="workflow">
         <h1 class="panel-title">Execution</h1>
@@ -300,6 +312,12 @@ function showTab(name){
  if(name==='chat'){unreadChat=0;document.querySelector('#chat-count').textContent='0';const c=document.querySelector('#chat');requestAnimationFrame(()=>c.scrollTop=c.scrollHeight)}
 }
 document.querySelectorAll('.tab').forEach(x=>x.addEventListener('click',()=>showTab(x.dataset.tab)));
+document.querySelector('#guidance-form').addEventListener('submit',async event=>{
+ event.preventDefault();const input=document.querySelector('#guidance-input'),status=document.querySelector('#guidance-status'),text=input.value.trim();
+ if(!text)return;status.className='command-status';status.textContent='Sending…';
+ try{const response=await fetch('/api/instructions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({text})});const body=await response.json();if(!response.ok)throw new Error(body.error||'Request failed');input.value='';status.className='command-status good';status.textContent='Queued for strategist: '+body.instruction.id}
+ catch(error){status.className='command-status bad';status.textContent=String(error)}
+});
 function render(d){
  const ok=d.observer.connected&&d.observer.authenticated&&d.game;
  document.querySelector('#conn').innerHTML='<i class="dot '+(ok?'ok':'')+'"></i>'+(ok?'live':'waiting');
@@ -311,6 +329,7 @@ function render(d){
  document.querySelector('#signals').innerHTML='<h2>Market signals</h2>'+((s.marketSignals||[]).length?(s.marketSignals||[]).map(x=>'<div class="signal"><span class="confidence">'+esc(x.confidence)+'%</span><b>'+esc(x.kind)+' · '+esc(x.topic)+'</b><div class="small muted">'+esc(x.evidence)+'</div><div class="small">'+esc(x.implication)+'</div></div>').join(''):'<div class="muted small">No current market signal.</div>');
  const o=d.operator;
  document.querySelector('#operator').innerHTML='<h2>Operator · '+esc(d.runtime.operatorModel)+' / '+esc(d.runtime.reasoningEffort)+'</h2><p class="summary">'+esc(o.summary||'Waiting for execution plan…')+'</p>'+(o.lastFailure?'<div class="bad small">Last failure: '+esc(o.lastFailure)+'</div>':'<div class="good small">No active failure</div>')+(o.escalation?'<div class="blocker warning"><b>Escalation · '+esc(o.escalation.reason)+'</b><div class="small">'+esc(o.escalation.question)+'</div></div>':'')+(o.blockers||[]).map(x=>'<div class="blocker"><b>'+esc(x.kind)+' · '+esc(x.target)+'</b><div class="small muted">'+esc(x.evidence)+'</div></div>').join('');
+ document.querySelector('#guidance').innerHTML='<h2>Human guidance</h2>'+((d.guidance||[]).length?(d.guidance||[]).map(x=>'<div class="signal"><span class="confidence '+(x.status==='pending'?'bad':'good')+'">'+esc(x.status)+'</span><b>'+new Date(x.createdAt).toLocaleTimeString()+'</b><div class="small">'+esc(x.text)+'</div>'+(x.appliedSummary?'<div class="small muted">Applied: '+esc(x.appliedSummary)+'</div>':'')+'</div>').join(''):'<div class="muted small">No human guidance submitted.</div>');
  const w=o.workflow; let wh='<h2>Execution workflow</h2>';
  if(w){const pct=Math.round(100*Math.min(w.stepIndex,w.steps.length)/Math.max(1,w.steps.length));wh+='<div class="workflow-head"><b>'+esc(w.name)+' v'+esc(w.version)+'</b><span class="small muted">step '+(w.stepIndex+1)+'/'+w.steps.length+' · attempt '+w.stepAttempts+'</span></div><div class="small muted">'+esc(w.goal)+'</div><div class="progress"><i style="width:'+pct+'%"></i></div>'+w.steps.map((x,i)=>'<div class="step '+(i<w.stepIndex?'done':i===w.stepIndex?'active':'future')+'"><b>'+(i<w.stepIndex?'✓ ':i===w.stepIndex?'▶ ':'○ ')+esc(x.description)+'</b><div class="step-code">'+esc(compact(x.directive))+' → '+esc(compact(x.completion))+'</div></div>').join('')}else wh+='<div class="muted small">No active workflow.</div>';document.querySelector('#workflow').innerHTML=wh;
  document.querySelector('#collection').innerHTML='<h2>Collection portfolio</h2><div class="grid2"><div class="metric"><b>'+esc(d.collection.observedCount)+'</b><span>items ever observed</span></div><div class="metric"><b>33</b><span>portfolio targets</span></div></div><div style="margin-top:8px">'+(d.collection.recentlyObserved||[]).map(x=>'<span class="tag">'+esc(x.name)+' ×'+esc(x.maxHeld)+'</span>').join('')+'</div>';
@@ -339,6 +358,24 @@ const server = Bun.serve({
         };
         if (url.pathname === '/api/status') {
             return Response.json(statusPayload(), { headers });
+        }
+        if (url.pathname === '/api/instructions' && request.method === 'POST') {
+            return request
+                .json()
+                .then(body => {
+                    const text =
+                        typeof body === 'object' &&
+                        body !== null &&
+                        'text' in body &&
+                        typeof body.text === 'string'
+                            ? body.text
+                            : '';
+                    const instruction = addHumanGuidance(text);
+                    return Response.json({ instruction }, { status: 201, headers });
+                })
+                .catch(error =>
+                    Response.json({ error: String(error) }, { status: 400, headers })
+                );
         }
         if (url.pathname === '/' || url.pathname === '/observer') {
             return new Response(html, {

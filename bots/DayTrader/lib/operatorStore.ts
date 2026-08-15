@@ -97,5 +97,12 @@ export function resetOperatorWorkflow(): void {
     current.stepAttempts = 0;
     current.baseline = null;
     current.lastSnapshot = null;
+    current.pendingEscalation = null;
+    saveOperatorState();
+}
+
+export function setOperatorEscalation(escalation: OperatorEscalation): void {
+    const current = loadOperatorState();
+    current.pendingEscalation = escalation;
     saveOperatorState();
 }

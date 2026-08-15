@@ -6,6 +6,7 @@ import {
     loadOperatorState,
     resetOperatorWorkflow,
     saveOperatorState,
+    setOperatorEscalation,
 } from './operatorStore';
 import { assessStall, evaluateProgress, snapshotProgress } from './operatorWatchdog';
 import { log } from './logger';
@@ -151,25 +152,40 @@ export class OperatorCoordinator {
             });
             runtime.lastDiagnosedAt = Date.now();
             saveOperatorState();
-            const diagnosis = await this.brain.diagnose({
-                ...this.request,
-                activeWorkflow: workflow,
-                runtime,
-                before,
-                after,
-                stall: effectiveStall,
-            });
-            installOperatorDecision(diagnosis, after);
-            if (diagnosis.workflow) storeReusableWorkflow(diagnosis.workflow);
-            log('operator_plan', {
-                model: this.brain.getModel(),
-                mode: 'diagnosis',
-                summary: diagnosis.summary,
-                blockers: diagnosis.blockers,
-                workflow: diagnosis.workflow,
-                escalation: diagnosis.escalation,
-            });
-            if (diagnosis.escalation) log('operator_escalation', { ...diagnosis.escalation });
+            try {
+                const diagnosis = await this.brain.diagnose({
+                    ...this.request,
+                    activeWorkflow: workflow,
+                    runtime,
+                    before,
+                    after,
+                    stall: effectiveStall,
+                });
+                installOperatorDecision(diagnosis, after);
+                if (diagnosis.workflow) storeReusableWorkflow(diagnosis.workflow);
+                log('operator_plan', {
+                    model: this.brain.getModel(),
+                    mode: 'diagnosis',
+                    summary: diagnosis.summary,
+                    blockers: diagnosis.blockers,
+                    workflow: diagnosis.workflow,
+                    escalation: diagnosis.escalation,
+                });
+                if (diagnosis.escalation) log('operator_escalation', { ...diagnosis.escalation });
+            } catch (error) {
+                resetOperatorWorkflow();
+                const escalation = {
+                    reason: 'repeated_failure' as const,
+                    question: 'Operator diagnosis failed validation; should the strategist replace this execution approach?',
+                    evidence: [String(error), ...effectiveStall.evidence],
+                    suggestedOptions: [
+                        'Choose another productive progression goal',
+                        'Retry with a simpler workflow',
+                    ],
+                };
+                setOperatorEscalation(escalation);
+                log('operator_escalation', { ...escalation });
+            }
         }
         return actionResult;
     }

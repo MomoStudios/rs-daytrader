@@ -110,4 +110,56 @@ describe('operator decision boundary', () => {
         });
         expect(decision.workflow?.steps[0]?.directive.type).toBe('dismiss_blocking_ui');
     });
+
+    test('rejects indefinite wait-only workflows', () => {
+        expect(() =>
+            parseOperatorDecision({
+                ...valid,
+                workflow: {
+                    ...valid.workflow,
+                    steps: [
+                        {
+                            id: 'wait',
+                            description: 'Wait without a concrete reason.',
+                            directive: { type: 'wait', ticks: 20 },
+                            completion: { type: 'action_success' },
+                            repeatUntilComplete: true,
+                            maxAttempts: 100,
+                        },
+                    ],
+                },
+            })
+        ).toThrow('wait-only workflows');
+    });
+
+    test('allows combat style and equipment directives', () => {
+        const parsed = parseOperatorDecision({
+            ...valid,
+            workflow: {
+                ...valid.workflow,
+                steps: [
+                    {
+                        id: 'equip',
+                        description: 'Equip an owned sword.',
+                        directive: { type: 'equip_item', item: 'Bronze sword' },
+                        completion: { type: 'action_success' },
+                        repeatUntilComplete: false,
+                        maxAttempts: 2,
+                    },
+                    {
+                        id: 'style',
+                        description: 'Select a style that trains Defence.',
+                        directive: { type: 'set_combat_style', skill: 'Defence' },
+                        completion: { type: 'action_success' },
+                        repeatUntilComplete: false,
+                        maxAttempts: 2,
+                    },
+                ],
+            },
+        });
+        expect(parsed.workflow?.steps.map(step => step.directive.type)).toEqual([
+            'equip_item',
+            'set_combat_style',
+        ]);
+    });
 });

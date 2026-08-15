@@ -43,6 +43,8 @@ export type OperatorDirective =
     | { type: 'shop_open'; npc: string }
     | { type: 'shop_close' }
     | { type: 'shop_buy'; item: string; amount: number }
+    | { type: 'equip_item'; item: string }
+    | { type: 'set_combat_style'; skill: 'Attack' | 'Strength' | 'Defence' }
     | { type: 'attack_npc'; target: string }
     | { type: 'wait'; ticks: number };
 
@@ -120,6 +122,8 @@ const DIRECTIVE_TYPES = new Set([
     'shop_open',
     'shop_close',
     'shop_buy',
+    'equip_item',
+    'set_combat_style',
     'attack_npc',
     'wait',
 ]);
@@ -261,6 +265,16 @@ function directive(value: unknown): OperatorDirective {
             };
         case 'shop_open':
             return { type: 'shop_open', npc: string(data.npc, 'directive.npc', 80) };
+        case 'equip_item':
+            return { type: 'equip_item', item: string(data.item, 'directive.item', 80) };
+        case 'set_combat_style':
+            if (!['Attack', 'Strength', 'Defence'].includes(String(data.skill))) {
+                throw new Error('directive.skill must be Attack, Strength, or Defence');
+            }
+            return {
+                type: 'set_combat_style',
+                skill: data.skill as 'Attack' | 'Strength' | 'Defence',
+            };
         case 'wait':
             return { type: 'wait', ticks: integer(data.ticks, 'directive.ticks', 1, 20) };
         default:
@@ -370,6 +384,13 @@ export function parseOperatorDecision(value: unknown): OperatorDecision {
 
     const parsedWorkflow = workflow(data.workflow);
     if (!parsedWorkflow && !escalation) throw new Error('operator decision requires a workflow or escalation');
+    if (
+        parsedWorkflow &&
+        parsedWorkflow.steps.every(step => step.directive.type === 'wait') &&
+        !escalation
+    ) {
+        throw new Error('wait-only workflows are not allowed; choose productive work or escalate');
+    }
     return {
         summary: string(data.summary, 'summary', 400),
         goal: goal(data.goal),

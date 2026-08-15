@@ -407,3 +407,49 @@ The main controller continues under `run-main-loop.sh`.
   human is already near the bottom, so manual reading is not interrupted.
 - Browser verification confirmed the tab navigation and live chat list against
   production messages.
+
+## Session 8 (human guidance + productive idle recovery)
+
+### Trusted human guidance
+- Added a persistent localhost guidance inbox at
+  `data/human-guidance.json` (ignored by git).
+- The observer has an always-visible compose box. `POST /api/instructions`
+  validates and queues 1-1000 character instructions.
+- Pending guidance forces a strategist planning pass even when the normal
+  planning interval has not elapsed.
+- Guidance is passed in a separate `<trusted_human_guidance>` block. It is
+  explicitly distinct from adversarial game chat and has high strategic
+  priority without bypassing trade or credential safety.
+- After a successful strategist response, the instruction is marked applied
+  with the decision summary. The Agents tab shows pending/applied status and
+  that summary.
+
+### Strategist → operator handoff
+- Human guidance updates the strategist goal; the normal operator planning
+  request then translates it into a bounded workflow.
+- A new strategic decision clears the obsolete operator workflow before
+  requesting its replacement, so invalid operator JSON can never leave stale
+  work running.
+- Failed operator diagnosis now clears its workflow and creates a deterministic
+  escalation rather than silently continuing the broken steps.
+- The periodic operator audit was moved out of an unreachable nested branch
+  and now runs as designed.
+
+### No indefinite inactivity
+- Strategist instructions forbid indefinite inactivity and require productive
+  capability building or escalation when a tool/route is blocked.
+- Operator schema rejects workflows made solely of wait steps unless there is
+  also an escalation.
+- Live guidance `Character is stuck ... choose productive progression` replaced
+  the repeated wait workflow with active recovery.
+
+### Human-directed combat
+- Added `equip_item` and skill-oriented `set_combat_style` directives.
+- Operator receives equipped-weapon combat styles and trusted combat learning
+  docs, allowing balanced Attack/Strength/Defence training.
+- Live observer guidance requested Lumbridge goblins until all three melee
+  stats reach 50 with gear upgrades.
+- Strategist preserved the complete three-stat target. Operator generated a
+  nine-step workflow, equipped Bronze sword and Wooden shield, selected the
+  Defence style, and began attacking goblins. Defence rose from 1 to 7 during
+  verification.
