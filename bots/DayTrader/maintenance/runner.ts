@@ -118,6 +118,7 @@ async function scanOnce(): Promise<void> {
     })) {
         try {
             await deployAutonomousMaintenanceWork(work.id);
+            if (isReloadRequested(startupGeneration)) return;
         } catch (error) {
             log('development_error', { stage: 'maintenance_autonomous_deploy', workId: work.id, issueId: work.issueId, error: String(error) });
         }
