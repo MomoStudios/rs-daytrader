@@ -41,6 +41,22 @@ export type IssueCategory =
     | 'transient_fault'
     | 'upgrade';
 
+/**
+ * The exact five technical categories the development layer autonomously
+ * repairs (deterministic recipe first, generic autonomous coding agent as
+ * the default fallback - see maintenance/autonomousWorkerRunner.ts).
+ * `escalation` (strategic goal-choice questions), `workflow` (game-execution
+ * recipes), `reservation_violation`, and `transient_fault` are handled by
+ * their own owning layer/mechanism and are never picked up here.
+ */
+export const DEVELOPMENT_ELIGIBLE_CATEGORIES: IssueCategory[] = [
+    'systemic_code',
+    'policy_gap',
+    'knowledge_gap',
+    'failure',
+    'upgrade',
+];
+
 const TERMINAL_REOPENABLE_STATUSES = new Set<IssueStatus>(['resolved', 'rejected', 'deferred', 'failed']);
 const OPEN_STATUSES = new Set<IssueStatus>(['detected', 'triaged', 'repairing', 'validating', 'canary']);
 
@@ -65,6 +81,28 @@ export interface IssueRecord {
     resolvedAt: number | null;
     createdAt: number;
     updatedAt: number;
+    /**
+     * When set (only meaningful while status='failed'), the autonomous
+     * development pipeline's bounded circuit-breaker/backoff policy is
+     * telling the maintenance worker not to retry this issue again before
+     * this timestamp. Technical failure is never silently converted to
+     * human ownership: it stays owner_layer='development' and is
+     * automatically reopened/retried once this deadline passes.
+     */
+    nextRetryAt: number | null;
+    /**
+     * The newest evidence-occurrence timestamp ever associated with this
+     * issue (an epoch-ms value derived from the underlying finding's
+     * evidenceRefs, or the review's trace window as a fallback - see
+     * developmentIssueBridge.ts). Distinct from `lastDetectedAt`, which only
+     * tracks when this row was last *processed* by recordIssue() and can
+     * therefore tick forward even when a review merely re-cites the exact
+     * same historical evidence it cited before. A canary rollback decision
+     * must compare against this field, never against `lastDetectedAt`
+     * alone, so replaying old evidence after a deploy never looks like a
+     * fresh post-deploy recurrence.
+     */
+    lastEvidenceAt: number | null;
 }
 
 interface IssueRow {
@@ -88,6 +126,8 @@ interface IssueRow {
     resolved_at: number | null;
     created_at: number;
     updated_at: number;
+    next_retry_at: number | null;
+    last_evidence_at: number | null;
 }
 
 function rowToRecord(row: IssueRow): IssueRecord {
@@ -118,6 +158,8 @@ function rowToRecord(row: IssueRow): IssueRecord {
         resolvedAt: row.resolved_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        nextRetryAt: row.next_retry_at,
+        lastEvidenceAt: row.last_evidence_at,
     };
 }
 
@@ -154,16 +196,41 @@ export interface RecordIssueInput {
     deadlineAt?: number | null;
     relatedWorkflowId?: string | null;
     relatedReviewId?: string | null;
+    /**
+     * Epoch-ms timestamp of the actual underlying evidence this detection
+     * is based on (e.g. derived from a trace event referenced in
+     * evidenceRefs), distinct from "now" (when recordIssue() happens to run).
+     * When omitted/null, `lastEvidenceAt` is left at whatever it already
+     * was (or null for a brand-new issue) - callers that never have a
+     * meaningful evidence timestamp simply never advance it, rather than
+     * having it default to the current time and silently defeat its
+     * purpose.
+     */
+    evidenceAt?: number | null;
+}
+
+function maxNullable(a: number | null, b: number | null): number | null {
+    if (a === null) return b;
+    if (b === null) return a;
+    return Math.max(a, b);
 }
 
 /**
  * Detect (or re-detect) an issue. Dedupes on fingerprint:
  * - unseen fingerprint -> new row, status='detected'.
  * - fingerprint currently open -> evidence merged, last_detected_at bumped,
- *   status/attempts untouched (still the same ongoing issue).
+ *   status/attempts/owner_layer untouched (still the same ongoing issue),
+ *   and last_evidence_at only advances if this detection's evidenceAt is
+ *   genuinely newer than what was already recorded.
  * - fingerprint previously resolved/rejected/deferred/failed -> reopened
  *   (status reset to 'detected', recurrenceCount incremented, resolution
- *   fields cleared) because the same problem has recurred.
+ *   fields cleared, owner_layer restored to this call's ownerLayer, and
+ *   last_evidence_at reset to this detection's own evidenceAt) because the
+ *   same problem has recurred. Restoring owner_layer here matters
+ *   specifically for a technical issue a `requires_direction` outcome had
+ *   re-routed to owner_layer='human': once the same underlying problem is
+ *   freshly (re)detected by the development pipeline, ownership must
+ *   return to 'development' rather than staying stuck on a human forever.
  */
 export function recordIssue(input: RecordIssueInput): IssueRecord {
     if (!input.fingerprint) throw new RegistryError('recordIssue requires a non-empty fingerprint');
@@ -182,8 +249,8 @@ export function recordIssue(input: RecordIssueInput): IssueRecord {
                         id, fingerprint, status, owner_layer, severity, category, title, description,
                         evidence, deadline_at, attempts, resolution_evidence, related_workflow_id,
                         related_review_id, recurrence_count, first_detected_at, last_detected_at,
-                        resolved_at, created_at, updated_at
-                    ) VALUES (?, ?, 'detected', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, 0, ?, ?, NULL, ?, ?)`
+                        resolved_at, created_at, updated_at, next_retry_at, last_evidence_at
+                    ) VALUES (?, ?, 'detected', ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, 0, ?, ?, NULL, ?, ?, NULL, ?)`
                 )
                 .run(
                     id,
@@ -200,7 +267,8 @@ export function recordIssue(input: RecordIssueInput): IssueRecord {
                     now,
                     now,
                     now,
-                    now
+                    now,
+                    input.evidenceAt ?? null
                 );
             database
                 .query(
@@ -219,13 +287,16 @@ export function recordIssue(input: RecordIssueInput): IssueRecord {
         const nextDeadline = reopening
             ? (input.deadlineAt !== undefined ? input.deadlineAt : severityDeadlineMs(input.severity, now))
             : existing.deadlineAt;
+        const nextOwnerLayer = reopening ? input.ownerLayer : existing.ownerLayer;
+        const candidateEvidenceAt = input.evidenceAt ?? null;
+        const nextLastEvidenceAt = reopening ? candidateEvidenceAt : maxNullable(existing.lastEvidenceAt, candidateEvidenceAt);
 
         database
             .query(
                 `UPDATE issues SET
                     status = ?, evidence = ?, last_detected_at = ?, recurrence_count = ?,
                     deadline_at = ?, resolved_at = ?, resolution_evidence = ?, updated_at = ?,
-                    description = ?
+                    description = ?, next_retry_at = ?, owner_layer = ?, last_evidence_at = ?
                  WHERE id = ?`
             )
             .run(
@@ -238,6 +309,12 @@ export function recordIssue(input: RecordIssueInput): IssueRecord {
                 reopening ? null : existing.resolutionEvidence,
                 now,
                 input.description || existing.description,
+                // Reopening clears any pending retry schedule - the issue is
+                // freshly detected/recurred, not still waiting out a prior
+                // failed attempt's backoff window.
+                reopening ? null : existing.nextRetryAt,
+                nextOwnerLayer,
+                nextLastEvidenceAt,
                 existing.id
             );
         if (reopening) {
@@ -259,6 +336,21 @@ export interface TransitionIssueInput {
     resolutionEvidence?: string | null;
     relatedWorkflowId?: string | null;
     incrementAttempts?: boolean;
+    /**
+     * Only meaningful when transitioning to 'failed': schedules the bounded
+     * autonomous retry/backoff deadline. Transitioning to any other status
+     * clears it automatically (a resolved/canary/repairing/detected issue is
+     * not "waiting to retry").
+     */
+    nextRetryAt?: number | null;
+    /**
+     * Re-routes ownership. Used sparingly: only an explicit
+     * `requires_direction` outcome from the autonomous coding agent (missing
+     * credentials/external authorization, or an irreversible product/policy
+     * decision) may move a development-owned issue to ownerLayer='human'.
+     * Technical failure/uncertainty must never use this field.
+     */
+    ownerLayer?: IssueOwnerLayer;
 }
 
 /** Explicit, transactional lifecycle transition (with audit history row). */
@@ -269,11 +361,17 @@ export function transitionIssue(input: TransitionIssueInput): IssueRecord {
         const existing = rowToRecord(row);
         const now = Date.now();
         const resolvedTerminal = input.status === 'resolved' || input.status === 'rejected';
+        const nextRetryAt =
+            input.status !== 'failed'
+                ? null
+                : input.nextRetryAt !== undefined
+                  ? input.nextRetryAt
+                  : existing.nextRetryAt;
         database
             .query(
                 `UPDATE issues SET
                     status = ?, attempts = ?, resolution_evidence = ?, related_workflow_id = ?,
-                    resolved_at = ?, updated_at = ?
+                    resolved_at = ?, updated_at = ?, next_retry_at = ?, owner_layer = ?
                  WHERE id = ?`
             )
             .run(
@@ -283,6 +381,8 @@ export function transitionIssue(input: TransitionIssueInput): IssueRecord {
                 input.relatedWorkflowId !== undefined ? input.relatedWorkflowId : existing.relatedWorkflowId,
                 resolvedTerminal ? now : existing.resolvedAt,
                 now,
+                nextRetryAt,
+                input.ownerLayer ?? existing.ownerLayer,
                 existing.id
             );
         database
@@ -354,4 +454,22 @@ export function listOverdueIssues(now = Date.now()): IssueRecord[] {
 
 export function isOpenStatus(status: IssueStatus): boolean {
     return OPEN_STATUSES.has(status);
+}
+
+/**
+ * Development-owned issues that failed a prior autonomous repair attempt
+ * and whose bounded backoff window has elapsed - ready to be automatically
+ * reopened and retried. Never returns human-owned issues: circuit-breaker
+ * backoff is a retry policy, not a route to a human.
+ */
+export function listRetryReadyIssues(now = Date.now()): IssueRecord[] {
+    const rows = getRegistryDb()
+        .query(
+            `SELECT * FROM issues
+             WHERE status = 'failed' AND owner_layer = 'development'
+               AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+             ORDER BY next_retry_at ASC`
+        )
+        .all(now) as IssueRow[];
+    return rows.map(rowToRecord);
 }

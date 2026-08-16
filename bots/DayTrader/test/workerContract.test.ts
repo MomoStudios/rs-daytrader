@@ -33,6 +33,8 @@ function issue(overrides: Partial<IssueRecord> = {}): IssueRecord {
         resolvedAt: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        nextRetryAt: null,
+        lastEvidenceAt: null,
         ...overrides,
     };
 }
@@ -118,5 +120,15 @@ describe('maintenance worker contract - restricted environment', () => {
         expect(restricted.BOT_PASSWORD).toBeUndefined();
         expect(restricted.OPENAI_API_KEY).toBeUndefined();
         expect(restricted.SERVER).toBeUndefined();
+    });
+
+    test('always includes a fixed host git author/committer identity, independent of the isolated HOME/any real ~/.gitconfig', () => {
+        const restricted = buildRestrictedEnv({ PATH: '/usr/bin' } as NodeJS.ProcessEnv, '/tmp/isolated-home-with-no-gitconfig');
+        const authorName = restricted.GIT_AUTHOR_NAME ?? '';
+        const authorEmail = restricted.GIT_AUTHOR_EMAIL ?? '';
+        expect(authorName).toBeTruthy();
+        expect(authorEmail).toBeTruthy();
+        expect(restricted.GIT_COMMITTER_NAME ?? '').toBe(authorName);
+        expect(restricted.GIT_COMMITTER_EMAIL ?? '').toBe(authorEmail);
     });
 });

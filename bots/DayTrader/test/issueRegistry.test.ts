@@ -6,6 +6,7 @@ import {
     getIssueByFingerprint,
     listIssues,
     listOverdueIssues,
+    listRetryReadyIssues,
     recordIssue,
     severityDeadlineMs,
     transitionIssue,
@@ -164,5 +165,137 @@ describe('issue registry - queries and metrics inputs', () => {
         const now = Date.now();
         expect(severityDeadlineMs('critical', now)).toBeLessThan(severityDeadlineMs('low', now));
         expect(severityDeadlineMs('high', now)).toBeLessThan(severityDeadlineMs('medium', now));
+    });
+});
+
+describe('issue registry - autonomous retry/backoff scheduling', () => {
+    test('transitioning to failed with nextRetryAt persists a bounded retry deadline', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        const retryAt = Date.now() + 60_000;
+        const failed = transitionIssue({ id: created.id, status: 'failed', nextRetryAt: retryAt, incrementAttempts: true });
+        expect(failed.status).toBe('failed');
+        expect(failed.nextRetryAt).toBe(retryAt);
+        expect(failed.attempts).toBe(1);
+    });
+
+    test('transitioning away from failed clears any pending retry deadline', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        transitionIssue({ id: created.id, status: 'failed', nextRetryAt: Date.now() + 60_000 });
+        const reopened = transitionIssue({ id: created.id, status: 'detected' });
+        expect(reopened.nextRetryAt).toBeNull();
+    });
+
+    test('listRetryReadyIssues only returns development-owned failed issues past their deadline', () => {
+        const ready = recordIssue(baseInput({
+            fingerprint: computeFingerprint(['retry-ready']),
+            ownerLayer: 'development',
+        }));
+        transitionIssue({ id: ready.id, status: 'failed', nextRetryAt: Date.now() - 1000 });
+
+        const notYet = recordIssue(baseInput({
+            fingerprint: computeFingerprint(['retry-not-yet']),
+            ownerLayer: 'development',
+        }));
+        transitionIssue({ id: notYet.id, status: 'failed', nextRetryAt: Date.now() + 60_000 });
+
+        const humanOwned = recordIssue(baseInput({
+            fingerprint: computeFingerprint(['retry-human-owned']),
+            ownerLayer: 'human',
+        }));
+        transitionIssue({ id: humanOwned.id, status: 'failed', nextRetryAt: Date.now() - 1000 });
+
+        const readyIds = listRetryReadyIssues().map(issue => issue.id);
+        expect(readyIds).toContain(ready.id);
+        expect(readyIds).not.toContain(notYet.id);
+        expect(readyIds).not.toContain(humanOwned.id);
+    });
+
+    test('re-recording a recurring failed issue reopens it and clears the stale retry deadline', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        transitionIssue({ id: created.id, status: 'failed', nextRetryAt: Date.now() + 60_000 });
+        const reopened = recordIssue(baseInput({ fingerprint: created.fingerprint, ownerLayer: 'development' }));
+        expect(reopened.status).toBe('detected');
+        expect(reopened.nextRetryAt).toBeNull();
+        expect(reopened.recurrenceCount).toBe(1);
+    });
+
+    test('transitionIssue can re-route ownership to human only via an explicit ownerLayer change', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        const requiresDirection = transitionIssue({
+            id: created.id,
+            status: 'deferred',
+            ownerLayer: 'human',
+            resolutionEvidence: 'requires external service credential the autonomous agent cannot obtain',
+        });
+        expect(requiresDirection.ownerLayer).toBe('human');
+        expect(requiresDirection.status).toBe('deferred');
+    });
+
+    test('reopening a technical issue after requires_direction restores ownership to development and clears the human deferral', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        transitionIssue({
+            id: created.id,
+            status: 'deferred',
+            ownerLayer: 'human',
+            resolutionEvidence: 'requires an external credential',
+        });
+        const deferred = recordIssue(baseInput({ fingerprint: created.fingerprint, ownerLayer: 'development' }));
+        // Confirm it actually reopened (not merely re-recorded a still-open row).
+        expect(deferred.status).toBe('detected');
+        expect(deferred.recurrenceCount).toBe(1);
+        // The key fix: ownership is restored to 'development' from the new
+        // detection's own ownerLayer, not left stuck on 'human' forever.
+        expect(deferred.ownerLayer).toBe('development');
+        expect(deferred.resolutionEvidence).toBeNull();
+    });
+
+    test('an issue still open (not terminal) never has its ownerLayer silently overwritten by a later recordIssue call', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development' }));
+        transitionIssue({ id: created.id, status: 'repairing' });
+        // Some other producer re-detects the same fingerprint while a human
+        // has manually taken ownership mid-flight (an edge case, but
+        // ownership for a still-open issue must never be silently
+        // clobbered by an ordinary re-detection).
+        transitionIssue({ id: created.id, status: 'repairing', ownerLayer: 'human' });
+        const redetected = recordIssue(baseInput({ fingerprint: created.fingerprint, ownerLayer: 'development' }));
+        expect(redetected.status).toBe('repairing'); // still open, not reopened
+        expect(redetected.ownerLayer).toBe('human'); // untouched by the merge path
+    });
+});
+
+describe('issue registry - evidence-occurrence tracking (lastEvidenceAt)', () => {
+    test('a new issue records its evidenceAt as lastEvidenceAt', () => {
+        const created = recordIssue(baseInput({ evidenceAt: 555 }));
+        expect(created.lastEvidenceAt).toBe(555);
+    });
+
+    test('a new issue with no evidenceAt leaves lastEvidenceAt null rather than defaulting to processing time', () => {
+        const created = recordIssue(baseInput({}));
+        expect(created.lastEvidenceAt).toBeNull();
+    });
+
+    test('re-recording an open issue only advances lastEvidenceAt when the new evidenceAt is genuinely newer', () => {
+        const created = recordIssue(baseInput({ evidenceAt: 1000 }));
+        expect(created.lastEvidenceAt).toBe(1000);
+
+        // Same or older evidence re-cited - must not regress or even move.
+        const stale = recordIssue(baseInput({ fingerprint: created.fingerprint, evidenceAt: 500 }));
+        expect(stale.lastEvidenceAt).toBe(1000);
+
+        // Genuinely newer evidence - advances.
+        const fresh = recordIssue(baseInput({ fingerprint: created.fingerprint, evidenceAt: 2000 }));
+        expect(fresh.lastEvidenceAt).toBe(2000);
+
+        // No evidenceAt supplied this time - leaves it exactly where it was.
+        const unspecified = recordIssue(baseInput({ fingerprint: created.fingerprint }));
+        expect(unspecified.lastEvidenceAt).toBe(2000);
+    });
+
+    test('reopening a terminal issue resets lastEvidenceAt to this detection\'s own evidenceAt (stale evidence is not carried forward)', () => {
+        const created = recordIssue(baseInput({ ownerLayer: 'development', evidenceAt: 1000 }));
+        transitionIssue({ id: created.id, status: 'resolved' });
+        const reopened = recordIssue(baseInput({ fingerprint: created.fingerprint, ownerLayer: 'development', evidenceAt: 42 }));
+        expect(reopened.status).toBe('detected');
+        expect(reopened.lastEvidenceAt).toBe(42);
     });
 });

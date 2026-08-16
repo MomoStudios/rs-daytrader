@@ -77,6 +77,7 @@ import {
     summarizeInventory,
 } from './lib/tradeReconciliation';
 import { recordRuntimeHeartbeat } from './lib/runtimeHealth';
+import { captureStartupGeneration, isReloadRequested } from './lib/deploymentReload';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -105,6 +106,12 @@ let chatGeneration = 0;
 let activeAction: StrategicAction | null = null;
 let lastCharacterTraceAt = 0;
 let lastCharacterTraceSignature = '';
+// See development/runner.ts for why every long-running DayTrader process
+// tracks its own startup generation against lib/deploymentReload.ts. The
+// main loop only checks between fully-completed iterations (never mid
+// trade/plan), so a reload never interrupts in-flight game actions.
+const mainLoopStartupGeneration = captureStartupGeneration();
+let mainLoopReloadRequested = false;
 
 const runResult = await runScript(async ({ bot, sdk }) => {
     await bot.skipTutorial();
@@ -154,7 +161,12 @@ const runResult = await runScript(async ({ bot, sdk }) => {
     unsubscribeChatWatcher = sdk.onStateUpdate(() => ingestNewChat());
 
     while (true) {
-        recordRuntimeHeartbeat('main-loop', 'loop');
+        recordRuntimeHeartbeat('main-loop', 'loop', mainLoopStartupGeneration);
+        if (isReloadRequested(mainLoopStartupGeneration)) {
+            log('note', { msg: 'newer deployment detected; main loop restarting for fresh code', startupGeneration: mainLoopStartupGeneration });
+            mainLoopReloadRequested = true;
+            break;
+        }
         ingestNewChat();
         maybeLogCharacterTrace();
         await clearStaleTradeInterface();
@@ -1124,7 +1136,13 @@ const runResult = await runScript(async ({ bot, sdk }) => {
     }
     } finally {
         unsubscribeChatWatcher?.();
-        recordRuntimeHeartbeat('main-loop', 'stopping');
+        recordRuntimeHeartbeat('main-loop', 'stopping', mainLoopStartupGeneration);
         await Promise.allSettled([brain.stop(), operator.stop()]);
     }
 });
+
+// A deploy/rollback while running leaves this process's module graph
+// stale. Exiting cleanly here (rather than looping forever) lets the
+// supervisor (run-supervisor.ts) restart it with freshly imported code.
+if (mainLoopReloadRequested) process.exit(0);
+if (!runResult.success) process.exit(1);

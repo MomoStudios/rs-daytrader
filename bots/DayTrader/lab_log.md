@@ -972,3 +972,718 @@ own TypeScript was outside the repo's typecheck/test gate entirely.
 - Development traces include all runtime heartbeats, allowing the reviewer to
   distinguish an execution defect from a dead executor and route future
   liveness incidents as systemic control-plane failures.
+
+## Session 17 (removing the recipe-only constraint: autonomous development
+   repair)
+
+### Motivation
+Session 15's maintenance worker was deliberately bounded to a human-authored
+recipe allowlist: an issue without a matching recipe stayed owned/deferred
+forever, even for `policy_gap`/`knowledge_gap`/`failure`/`upgrade` findings
+that a human would never realistically hand-author a recipe for. An audit
+found this meant most technical findings never got fixed at all - they just
+accumulated in the registry. The fix is not "more recipes"; it's a
+tool-enabled autonomous coding agent that is the *default fallback* whenever
+no deterministic recipe matches, so unknown technical defects are never
+deferred merely for lack of a pre-authored recipe. Deterministic recipes
+remain a fast path (still zero-LLM, still fully bounded) for the handful of
+problems worth hand-authoring one for.
+
+### Routing: every technical finding is development-owned
+  (`lib/developmentIssueBridge.ts`)
+- Previously `findingToIssueInput` chose `ownerLayer` from `finding.target`
+  (`strategist`/`operator` -> themselves, `observer` -> `human`). Now **every**
+  non-`success` finding (`failure`/`policy_gap`/`knowledge_gap`/`upgrade`/
+  `systemic_code`) is `ownerLayer: 'development'`, regardless of target. The
+  original target is preserved as context (`[originally targeted at X]` in
+  the description, `development_finding_target:X` in evidence) and still
+  keeps the fingerprint distinct per target, but it is no longer an ownership
+  decision - only the autonomous agent's own `requires_direction` outcome can
+  re-route a *specific* issue to a human afterward.
+- This bridge still never touches `category: 'escalation'` (raised directly
+  by `escalationStore.ts` for strategic goal-choice questions - what to buy,
+  whether to accept a trade). Repeated *technical* operator/strategist
+  failures reach development the same way they always did: the development
+  reviewer reads `registryMetrics`/`systemicIssues` from the trace and emits
+  a finding, which this bridge now always routes to development.
+
+### Autonomous coding agent (`lib/autonomousDevelopmentAgent.ts`)
+- A second, separate Copilot session type from `DevelopmentBrain`: full
+  built-in coding tools (`new ToolSet().addBuiltIn('*')`) instead of
+  tool-free. `mode: 'empty'`, `workingDirectory` is one isolated git
+  worktree, `baseDirectory` is a dedicated, git-ignored runtime directory
+  under `data/copilot-autonomous-runtime/<workId>` (never shared with
+  `DevelopmentBrain`'s own runtime dir). Model `gpt-5.6-terra`, with a safe,
+  tested fallback chain (`pickAutonomousModel`) if it's unavailable in this
+  environment; reasoning effort medium (configurable to high).
+- No MCP servers, no config/instruction discovery
+  (`enableConfigDiscovery: false`, `skipCustomInstructions: true`), no
+  session persistence (`enableSessionStore: false`), no extensions
+  (`requestExtensions: false`), and no user-input tool (`onUserInputRequest`
+  is never supplied, which is what disables the `ask_user` tool entirely) -
+  the agent must resolve technical uncertainty itself or report
+  `failed`/`requires_direction`, never pause to ask a human how to write the
+  code.
+- `onPreToolUse`/`onPostToolUse`/`onPostToolUseFailure` hooks give an audit
+  trail of every tool call (name, success/failure, timestamp) independent of
+  the permission gate below.
+- The agent's own final answer is untrusted prose until parsed as strict
+  JSON (`lib/autonomousAgentSchema.ts`): `outcome` (`resolved|
+  already_resolved|failed|requires_direction`), `summary`, `rootCause`,
+  `testsRun`, `humanQuestion` (required only for `requires_direction`).
+  `sendAndWait` is bounded to 15 minutes; `stop()` always disconnects the
+  session and stops the client, even on error.
+
+### Deny-by-default permission handler
+  (`maintenance/autonomousPermissionHandler.ts`)
+- Every permission request kind the runtime can raise is covered:
+  `read`/`write` are approved only when the canonicalized path (symlinks and
+  `..` traversal resolved via `realpathSync`, walking up to the nearest real
+  ancestor for not-yet-created files) falls inside the isolated worktree and
+  matches none of a blocked-pattern list (`.git`, `node_modules`, `bot.env`/
+  `.env`, `bots/DayTrader/data`, credentials, private keys, `.ssh`, `.aws`).
+  `mcp`/`url`/`memory`/`custom-tool`/`hook`/`extension-management`/`factory`/
+  `extension-permission-access` are unconditionally denied. `shell` requests
+  are allowlisted by parsed command identifier (`git status/diff/log/show/
+  rev-parse`; `bun test`/`bun run`; `tsc`; `rg`/`grep`/`sed`/`awk`/`head`/
+  `tail`/`cat`/`ls`/`find`/`pwd`/`wc`/`sort`/`uniq`/`diff`/`test`) - a single
+  disallowed segment (chained via `&&`, substitution, etc.) rejects the
+  whole request. `git push/fetch/pull/reset/clean/checkout/switch/rebase/
+  merge/cherry-pick/commit`, `curl`/`wget`/`ssh`/`gh`/`npm install`/`bun
+  install`, file-write redirection, `sudo`, process killing, environment
+  dumping, and command substitution/`eval` are always denied.
+  `managedApprovalRequired` and `requestSandboxBypass` are always denied (no
+  interactive human is present to approve them). Pure functions
+  (`evaluatePathAccess`, `evaluateShellRequest`, `decidePermission`) are
+  fully unit-tested without a real Copilot session.
+
+### Isolated autonomous worker lifecycle
+  (`maintenance/autonomousWorkerRunner.ts`)
+- Reuses the same `maintenance_work` table with `recipeId:
+  'autonomous-development'` - atomic claim (`proposeMaintenanceWork` +
+  `claimMaintenanceWork`), isolated `git worktree`/branch, issue transitioned
+  to `repairing` with an incremented attempt count.
+- The agent's outcome label is never trusted alone: the host independently
+  runs `git status --porcelain` and only trusts what it actually finds.
+  - `requires_direction` -> the issue is the *only* place ownership ever
+    moves to `human` (`ownerLayer: 'human'`, `status: 'deferred'`,
+    `resolutionEvidence` = the agent's exact `humanQuestion`).
+  - `failed`, or `resolved`/`already_resolved` with **no actual diff** and a
+    failing independent full gate -> bounded retry (see below); any partial
+    diff a failed attempt left behind is discarded, never committed.
+  - `resolved`/`already_resolved` with no diff and a *passing* independent
+    `bun run check` -> resolved immediately with evidence citing the
+    verification (nothing to deploy).
+  - Any real diff -> mandatory validate -> gate -> commit -> `canary`
+    pipeline: every changed/staged path is checked against a broad
+    allow-by-default repository policy (blocks secrets/`bots/*/data/**`/
+    `server/vendor`/private keys; allows ordinary repository code/docs/
+    config), the patch is bounded (<=30 files, <=5000 changed lines), binary
+    files and obvious secret/credential content patterns are rejected, `bun
+    run check` (the same full gate as `bun run check` everywhere else in
+    this repo) must pass, and only then is a commit made with an
+    issue-linked message and the repository's standard Copilot trailer. The
+    issue moves to `canary`, **not** `resolved` - deployment is separate.
+- Verified end-to-end against a real, throwaway git repository (not this
+  checkout) with a scripted/mocked agent (never a real model call) - see
+  `test/autonomousWorkerRunner.test.ts`.
+
+### Deploy/canary/rollback (`maintenance/autonomousDeployment.ts`)
+- `deployAutonomousMaintenanceWork` re-validates the canary commit's paths,
+  requires a clean live checkout, cherry-picks, and re-runs the full gate.
+  Deployment success still does **not** resolve the issue: it records a
+  structured `canaryOutcome` (deployed revision, original commit, baseline
+  `lastDetectedAt`/`recurrenceCount`, a baseline registry-metrics snapshot,
+  changed paths, and a bounded observation deadline) and requests a
+  deployment reload.
+- `evaluateAutonomousCanaries` runs every maintenance scan:
+  - **redetected** (the issue's `lastDetectedAt` advanced past the baseline
+    captured right before deployment - i.e. the same problem was observed
+    again) or **regressed** (open *and* overdue issue counts both
+    measurably worsened - a single noisy unrelated metric never triggers a
+    rollback) -> immediate verified rollback;
+  - inside the observation window with no regression -> wait;
+  - window elapsed with a fresh main-loop heartbeat since deployment and no
+    recurrence -> promote/resolve;
+  - window elapsed but telemetry is inconclusive (no fresh heartbeat yet)
+    -> extend the window boundedly (capped extension count), then promote
+    anyway once extensions are exhausted - **never** ask a human for a
+    purely technical/observability question.
+- `rollbackAutonomousDeployment` runs `git revert --no-edit <deployed
+  revision>` on the clean live checkout, re-verifies the full gate, reopens
+  the issue for a bounded retry, and requests a deployment reload. A revert
+  conflict on an otherwise-clean checkout (exceptional git state, not an
+  ordinary technical failure) is logged loudly and left for the next scan to
+  retry rather than silently discarded or falsely marked resolved.
+
+### Deployment reload signal (`lib/deploymentReload.ts`)
+- A tiny file-backed generation counter, bumped by every successful deploy
+  or verified rollback. The main loop (`daytrader.ts`), the development
+  reviewer (`development/runner.ts`), and the maintenance worker
+  (`maintenance/runner.ts`) each capture their own startup generation and
+  check for a newer one only *between* fully-completed iterations (after a
+  review/scan/game-loop tick has already persisted, never mid-transaction),
+  then exit cleanly (status 0) so the existing unified supervisor
+  (`run-supervisor.ts`) restarts them with the freshly deployed code -
+  exactly the same mechanism the supervisor already uses for crash
+  restarts, just triggered deliberately instead of by accident.
+
+### Human boundary and bounded retry (issue lifecycle + registry)
+- `requires_direction` is reserved for exactly two situations: a missing
+  credential/external-service authorization the agent cannot obtain in this
+  environment, or an irreversible product/game-direction/policy decision.
+  It is never used for ordinary technical uncertainty, a failing test the
+  agent hasn't fixed yet, or running out of time - the system prompt says so
+  explicitly, and the host cross-checks: a `failed` outcome (or an
+  inconsistent `already_resolved` claim) always stays `ownerLayer:
+  'development'`.
+- `issues.next_retry_at` (additive SQLite column migration, applied on open
+  so an existing database file upgrades without data loss - see
+  `test/registryDbMigration.test.ts`) drives a bounded exponential backoff
+  (`maintenance/autonomousRetryPolicy.ts`: 5 minutes doubling up to a 6-hour
+  cap) keyed off the issue's accumulated attempt count.
+  `listRetryReadyIssues()` returns exactly the development-owned `failed`
+  issues whose backoff has elapsed; the maintenance scan reopens and retries
+  them automatically. A technical issue that keeps failing is retried
+  forever, increasingly slowly - it is never silently converted to a human
+  the way "give up after N attempts" policies often do.
+
+### Maintenance scan now covers every development-owned technical category
+  (`maintenance/runner.ts`, `lib/issueRegistry.ts`'s
+  `DEVELOPMENT_ELIGIBLE_CATEGORIES`)
+- The scan loop's candidate query is no longer `category: 'systemic_code'`
+  only; it now covers exactly the five technical categories the goal
+  requires (`systemic_code`, `policy_gap`, `knowledge_gap`, `failure`,
+  `upgrade`), always trying an approved deterministic recipe first and
+  falling back to the autonomous agent. Each scan also: promotes
+  auto-promotable deterministic-recipe canaries (unchanged), deploys
+  not-yet-deployed autonomous canaries, evaluates every deployed autonomous
+  canary, and reopens/retries backoff-ready issues - all before scanning for
+  freshly detected work.
+
+### Observer metrics (`lib/registryMetrics.ts`)
+- `RegistryMetrics.autonomous`: `queued`, `awaitingDeployment`,
+  `inObservation` (+ `nextCanaryDeadlineAt`), `rolledBack`, `awaitingRetry`
+  (+ `nextRetryAt`), `totalAttempts` - tracked separately from deterministic
+  maintenance work and from the pre-existing `humanIntervention` counters.
+- `RegistryMetrics.humanIntervention.requiresDirectionPending`: development-
+  owned technical issues re-routed to a human, tracked distinctly from
+  `escalationsRaised` (strategic goal-choice questions) and from the
+  general `deferredCount`. Exposed unchanged via the existing
+  `GET /api/metrics` observer endpoint (no new route needed - it already
+  returns the full `computeRegistryMetrics()` object).
+
+### Testing approach
+- The autonomous agent is never invoked for real in tests: every
+  orchestration test (`autonomousWorkerRunner.test.ts`,
+  `autonomousDeployment.test.ts`) injects a scripted `agentRun`/`spawn`
+  function and exercises real `git` subprocesses against a throwaway
+  scratch repository, exactly like session 15's deterministic-recipe tests.
+- New dedicated test files: `autonomousPermissionHandler.test.ts` (path
+  canonicalization/symlink/traversal/blocked-file and shell allow/deny,
+  29 cases), `autonomousAgentSchema.test.ts`, `autonomousDevelopmentAgent.test.ts`
+  (pure `pickAutonomousModel`/prompt-building), `autonomousRetryPolicy.test.ts`,
+  `deploymentReload.test.ts`, `registryDbMigration.test.ts` (upgrading a
+  pre-existing database file), `maintenanceRunner.test.ts`
+  (`eligibleCandidates`), plus expanded `issueRegistry.test.ts` and
+  `registryMetrics.test.ts` coverage for retry/backoff and the new
+  `autonomous`/`requiresDirectionPending` metrics.
+- `developmentIssueBridge.test.ts` was rewritten (not just extended) to
+  assert the new routing behavior; the old target-based-ownership
+  assertions no longer describe the system's behavior on purpose.
+
+### Honest remaining constraints
+- A `git revert` conflict during rollback (an exceptional, hopefully rare,
+  git-state problem on an otherwise-clean live checkout) is logged loudly
+  and left for the next scan to retry; it is not auto-resolved by any
+  smarter recovery, since this repo's own commit history is out of scope for
+  automatic mutation beyond the guarded cherry-pick/revert already
+  implemented.
+- The canary observation window's "fresh heartbeat" signal only checks the
+  main loop's heartbeat. It is a reasonable proxy for "the system is alive
+  and running the deployed code," but it does not (and cannot, without a
+  real canary-execution harness like the one workflow candidates still lack
+  from session 15) prove the *specific* fixed behavior re-executed
+  successfully - only that nothing regressed the tracked registry metrics
+  and the same issue wasn't redetected.
+- Bounded extension count means an inconclusive canary is eventually
+  promoted rather than rolled back purely for lack of telemetry; this
+  trades a small risk of promoting an unobserved fix for the stronger
+  guarantee that no autonomous repair waits on a human indefinitely.
+- As with session 15's single deterministic recipe, the autonomous coding
+  agent is the sole fallback; it is bounded by the same `bun run check`
+  gate as every human contributor, but its actual fix quality is only as
+  good as the model behind it in a given run - a `failed` outcome (with
+  bounded retry) is the expected, safe result when it cannot converge on a
+  correct fix within its time/tool budget.
+
+## Session 18 (security audit hardening: closing the systemic gaps in
+   session 17's autonomous pipeline)
+
+### Motivation
+An external design/security audit of session 17's autonomous development
+pipeline found a set of concrete, exploitable-or-just-plain-wrong gaps: a
+permission-handler fallback that could approve a chained forbidden command,
+several places where the deterministic host silently trusted a spawn result
+it never checked, a canary rollback signal that could be defeated by a
+review simply re-citing old evidence, a control-plane gate resolved from
+the very `package.json` an autonomous patch could rewrite, and no extra
+scrutiny at all for a patch that modifies the safety machinery itself. None
+of these were "the model behaved unsafely" - the deterministic host's own
+code had to be fixed. This session works through the full list without
+weakening the core promise: unknown technical issues still retry
+automatically forever, and a *protected* technical change gets independent
+review, never automatic human routing.
+
+### Permission handler: fail-closed fallback, path/URL enforcement, tighter
+  command policy (`maintenance/autonomousPermissionHandler.ts`)
+- `evaluateShellRequest`'s old fallback (used whenever the runtime didn't
+  hand back parsed `commandSegments`) mapped every `commands[]` entry onto
+  the *entire* raw command text as if each were its own segment - so `git
+  status && rm -rf /` with no segments would have evaluated `rm -rf /`'s
+  identifier against the full string and could slip through. It now: (a)
+  denies outright the instant the raw text contains any control/chaining
+  operator (`;`, `&&`, `||`, `|`, `&`, a newline) and no segments were
+  parsed; (b) even with segments present, denies if the raw text still
+  looks chained but only one segment came back (a parser gap must fail
+  closed, not silently approve); (c) the segment-less fallback now only
+  ever approves **exactly one** parsed command whose `commands[].readOnly`
+  is `true` **and** whose identifier is one of the bare read-only utilities
+  - `git`/`bun` are never approved through this path at all, since their
+  safety depends entirely on the subcommand, which the fallback cannot see.
+- `possiblePaths`/`possibleUrls` (present on every real shell permission
+  request, previously ignored entirely) are now enforced: any
+  `possibleUrls` entry denies the whole request outright (no network,
+  ever), and every `possiblePath` is resolved against `worktreeRoot` (never
+  the host process's own `cwd`) and run through the same
+  `evaluatePathAccess` blocked-pattern check reads/writes get.
+- `awk`, `sed`, and `find` were removed from the bare-identifier allowlist
+  entirely - no argv-safe mode was implemented for any of them, since each
+  has a code-execution or in-place-mutation primitive (`awk`'s
+  `system()`/`ENVIRON`, `sed -i`/`e`/`w`, `find -exec`/`-delete`/...). `bun
+  test` is now bounded to repo-relative paths/a tiny safe flag set (no
+  `-e`/`--eval`/`--preload`/`-r`/`--require`, no absolute paths, no `..`
+  traversal); `bun run` is bounded to a fixed safe script set
+  (`typecheck`/`typecheck:webclient`/`typecheck:daytrader`/
+  `docs:api:check`/`check`) with **no** extra passthrough arguments
+  accepted at all.
+
+### Pinned, immutable verification gate (`maintenance/pinnedGate.ts`, new)
+- Every gate run (worker pre-commit, deploy post-cherry-pick, rollback
+  post-revert) used to be `[process.execPath, 'run', 'check']` - i.e.
+  whatever `package.json`'s `"check"` script says *right now*, in the
+  checkout the patch itself just modified. Since `package.json` is
+  something an autonomous patch can rewrite, this meant a sufficiently
+  malicious patch could redefine what "the gate" even checks.
+  `pinnedGate.ts` replaces this with a fixed, four-step argv sequence
+  (`tsc --noEmit` at the root, `-p server/webclient/tsconfig.json`, `-p
+  bots/DayTrader/tsconfig.json`, then `bun test` over a fixed,
+  existence-checked set of repo-relative test directories) built entirely
+  from constants defined in this module - never read from any `scripts`
+  field. The `tsc` binary itself always resolves from a stable "tool root"
+  (the real repository checkout, guaranteed to have `node_modules`) even
+  when the code under test lives in a brand-new, `node_modules`-less
+  isolated worktree; only the working directory (and therefore which
+  tsconfig/tests actually run) points at the code being verified.
+- **Residual trust, stated plainly**: this still *executes* the target
+  checkout's own source and test files with a real compiler and test
+  runner. A patch cannot change *which* commands run or grant itself
+  elevated privileges/credentials/network access while doing so (see
+  below), but it necessarily can still influence what those pinned
+  commands observe - that is unavoidable for any system that actually
+  verifies a fix by running it. This is exactly why the diff/path/secret
+  policy gate (`validateAutonomousChange`/`isDeployPathAllowed`) and, for
+  protected paths, the independent patch review (below) both run **before**
+  this gate, never after: known-dangerous paths and obvious secret-shaped
+  content are rejected before a single pinned command ever executes a byte
+  of the patch.
+
+### Independent review for protected-path patches
+  (`maintenance/protectedPaths.ts`, `lib/autonomousPatchReviewer.ts`,
+  `lib/autonomousPatchReviewSchema.ts`, all new)
+- A patch that touches `package.json`/any lockfile, anything under
+  `maintenance/` (the entire autonomous control plane), the process
+  supervisor, or the handful of `lib/` files just as load-bearing
+  (`autonomous*.ts`, `deploymentReload.ts`, `issueRegistry.ts`,
+  `maintenanceStore.ts`, `registryDb.ts`, `developmentIssueBridge.ts`,
+  `registryMetrics.ts`) is now required to pass a **separate, independent**
+  Copilot review session before the worker will ever commit it - never
+  "ask a human instead." That reviewer session is brand-new and tool-free
+  (`availableTools: []`, permission handler always rejects, exactly like
+  `DevelopmentBrain`) - it never shares process memory or session state with
+  the primary `AutonomousDevelopmentAgent` that authored the patch, and is
+  given only the bounded diff text and changed-path list, never the
+  checkout itself. Its answer is parsed the same strict-JSON way every
+  other LLM output in this codebase is (`approved`/`summary`/`findings`,
+  a rejection must cite at least one finding). A rejection - or the
+  reviewer session itself failing to complete - is treated exactly like any
+  other technical failure: `failForRetry`, issue stays `ownerLayer:
+  'development'`, bounded backoff, never routed to a human.
+- Why this can't be bypassed by the patch itself: the currently-running
+  host process already has `protectedPaths.ts`/`autonomousPatchReviewer.ts`
+  loaded into memory from *before* the patch was ever authored, and keeps
+  calling that in-memory logic for the rest of its run regardless of what a
+  patch writes to those files on disk - identical reasoning to why the
+  pinned gate can't be bypassed by rewriting `package.json`. Both only take
+  effect on the *next* process restart, by which point this exact
+  mechanism already had to approve the patch that changed them.
+- Ordinary (non-protected-path) patches never invoke this at all - the
+  pinned gate plus the existing broad path/secret/size policy is enough for
+  them, matching "for ordinary paths review optional."
+
+### Typed `requires_direction`, with a host-side credibility check
+  (`lib/autonomousAgentSchema.ts`, `maintenance/autonomousWorkerRunner.ts`)
+- `AutonomousAgentResult` gained a mandatory `directionKind: 'credentials' |
+  'external_authorization' | 'irreversible_policy' | null` - required
+  (non-null) whenever `outcome === 'requires_direction'`, and rejected as
+  malformed if present for any other outcome. This alone stops
+  `requires_direction` from being an open-ended "I'm not sure" escape
+  hatch.
+- The host additionally runs `assessDirectionRequestCredibility` before
+  ever re-routing an issue to a human: a lightweight keyword-plausibility
+  check that the `humanQuestion`/`summary` actually read like the declared
+  `directionKind` (e.g. a `'credentials'` request should mention a
+  credential/API key/token, not "this bug is just hard"). Anything
+  malformed, or "well-formed but not credible" (ordinary technical
+  uncertainty wearing a `requires_direction` label to dodge the "keep
+  retrying" instruction), is now treated as an ordinary technical failure -
+  `failForRetry`, never `ownerLayer: 'human'`.
+
+### Evidence-occurrence tracking, not mere reprocessing time
+  (`lib/issueRegistry.ts` + `last_evidence_at` migration,
+  `lib/developmentIssueBridge.ts`, `maintenance/autonomousDeployment.ts`)
+- The canary rollback signal used to be "did `lastDetectedAt` advance past
+  the pre-deploy baseline" - but `recordIssue()` bumps `lastDetectedAt` on
+  *every* re-detection, even when a development review simply re-emits the
+  exact same historical trace evidence it already cited before the deploy
+  ever happened. That is a false "this recurred" signal, not a real one.
+- `issues.last_evidence_at` (additive migration, alongside `next_retry_at`)
+  tracks the newest *evidence-occurrence* timestamp ever cited for an
+  issue - `developmentIssueBridge.ts` derives it from any 13-digit
+  (epoch-ms) run found in the finding's own `evidenceRefs`
+  (`extractLatestEvidenceTimestamp`), falling back to the review's own
+  `traceWindow.endTs` (always a fresh, just-captured timestamp) only when
+  the finding cites no timestamp of its own. `recordIssue()` only ever
+  advances it to a genuinely newer value (or resets it fresh on a terminal
+  reopen) - never regresses, never bumps on mere reprocessing.
+- The canary outcome now captures `baselineLastEvidenceAt` alongside
+  `baselineLastDetectedAt`; `wasIssueRedetectedAfterDeployment` prefers
+  `lastEvidenceAt > deployedAt` whenever an evidence timestamp exists,
+  falling back to the coarser `lastDetectedAt`-vs-baseline signal only for
+  issues/producers that never populate `evidenceAt` at all.
+
+### Reopening restores ownership; never promote without a fresh heartbeat;
+  no starvation in the canary/metrics queries (`lib/issueRegistry.ts`,
+  `lib/maintenanceStore.ts`, `lib/registryMetrics.ts`,
+  `maintenance/autonomousDeployment.ts`, `maintenance/runner.ts`)
+- `recordIssue()` reopening a terminal issue (e.g. one a prior
+  `requires_direction` outcome had deferred to `ownerLayer: 'human'`) now
+  restores `owner_layer` from the new detection's own input (always
+  `'development'` via the bridge) - previously the `UPDATE` never touched
+  `owner_layer` at all, so a technical issue that had once been re-routed
+  to a human stayed stuck there forever even after the same underlying
+  problem recurred and was freshly detected by development. An issue that
+  is merely still open (not reopened) never has its ownership silently
+  overwritten by a later `recordIssue()` call.
+- `evaluateCanary` used to promote a deployed canary once bounded
+  extensions were exhausted *even if it had never once observed a fresh
+  post-deploy heartbeat* - i.e. it could promote a deploy the system might
+  not even be alive on. It now rolls back instead in that exact case
+  (bounded automatic retry follows, same as any other rollback) - a canary
+  is only ever promoted after a fresh heartbeat actually confirms the
+  system is running the new code.
+- `listMaintenanceWork` gained a `recipeId` filter applied at the SQL layer
+  (before `LIMIT`); `registryMetrics.ts`'s autonomous-pipeline counters and
+  `autonomousDeployment.ts`/`runner.ts`'s canary-scan queries all use it
+  now, so a busy deterministic-recipe queue can no longer push autonomous
+  canary rows out of a bounded page before they're even filtered.
+
+### Exact-revision, this-call-only deploy rollback
+  (`maintenance/autonomousDeployment.ts`)
+- `deployAutonomousMaintenanceWork`'s post-cherry-pick gate failure used to
+  unconditionally `git revert --no-edit HEAD` - but if the canary commit
+  was *already* an ancestor of `HEAD` before this call ever ran (e.g. a
+  previous/concurrent deploy already applied it), `HEAD` could by then be
+  an entirely unrelated commit this call has no business reverting. It now
+  tracks whether *this call* actually performed the cherry-pick; if not, a
+  gate failure fails for a bounded retry without touching the live checkout
+  at all, and when this call did deploy, it reverts the exact revision it
+  captured immediately after the cherry-pick, never a possibly-since-moved
+  `HEAD`.
+
+### Git-command failures fail closed; a real host git identity
+  (`maintenance/autonomousWorkerRunner.ts`, `maintenance/workerContract.ts`)
+- `git status --porcelain`'s result was never checked for success -  a
+  failed inspection (not merely "no output") fell straight into the
+  "no changes, verify via gate, promote" fast path, so a `git status`
+  failure could have been treated as `already_resolved`. Same issue for
+  `git diff --numstat`/`git diff --cached`: an inspection failure was never
+  distinguished from "empty valid diff." Both now fail the attempt for a
+  bounded retry immediately, with no path that lets an inspection failure
+  masquerade as an empty or already-resolved change.
+- `buildRestrictedEnv` always redirected `HOME` to an isolated,
+  `.gitconfig`-free directory (correctly, to keep every worker/deploy/
+  rollback git invocation independent of whatever happens to be in the
+  operator's real home directory) - but that meant the host's own `git
+  commit`/`cherry-pick`/`revert` calls had no git identity to resolve at
+  all unless the target repository happened to have local `user.name`/
+  `user.email` config (which it does in every test fixture, but is not
+  guaranteed for the real repository). `buildRestrictedEnv` now always
+  injects a fixed `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+  `GIT_COMMITTER_EMAIL` identity (git resolves these environment variables
+  before ever consulting `~/.gitconfig`), so host git commands work
+  regardless of the isolated `HOME` or the real operator's global config.
+  This identity is baked into `buildRestrictedEnv`'s own output, which the
+  autonomous coding agent's tool subprocesses never receive in the first
+  place (the agent's `CopilotClient` uses a completely separate,
+  full-ambient-env configuration) - it is never exposed to agent-run shell
+  commands.
+
+### Testing approach
+- Every new/changed pure decision function (`evaluateShellRequest`'s
+  fail-closed fallback, `wasIssueRedetectedAfterDeployment`'s evidence
+  preference, `evaluateCanary`'s never-promote-without-a-heartbeat branch,
+  `assessDirectionRequestCredibility`, `protectedPaths.ts`,
+  `pinnedGate.ts`'s `buildPinnedGateSteps`/`runPinnedGate`) is unit-tested
+  directly, with no Copilot session involved at all.
+- The independent patch reviewer is never invoked for real in tests: every
+  worker-level test that exercises the protected-path branch injects its
+  own `patchReview` mock via `RunAutonomousMaintenanceWorkOptions
+  .patchReview` (approve/reject/throw cases all covered), and every other
+  existing test - none of which touch a protected path - implicitly proves
+  the reviewer is *never* called for an ordinary change (no test hangs or
+  makes a network/model call). The pinned gate is likewise never run for
+  real against a full TypeScript project in tests: `pinnedGate.ts` exposes
+  a `_setPinnedGateStepsForTests` hook (the same test-only-hook pattern
+  already used by `_resetRegistryForTests`/`_setLogDataDirForTests`/
+  `_setRuntimeHealthDataDirForTests`) that every worker/deployment test
+  points at the scratch repo's own fast pass/fail fixture script instead.
+- New dedicated test files: `pinnedGate.test.ts`, `protectedPaths.test.ts`,
+  `autonomousPatchReviewSchema.test.ts`, plus substantially expanded
+  coverage in `autonomousPermissionHandler.test.ts` (fail-closed fallback,
+  `possiblePaths`/`possibleUrls`, awk/sed/find removal, bounded bun test/run
+  args), `autonomousDeployment.test.ts` (evidence-occurrence rollback
+  semantics, never-promote-without-heartbeat, exact-revision/this-call-only
+  revert), `autonomousWorkerRunner.test.ts` (git-inspection-failure
+  fail-closed behavior, host git identity, protected-path review
+  integration), `autonomousAgentSchema.test.ts` (`directionKind` validation
+  and `assessDirectionRequestCredibility`), `issueRegistry.test.ts`
+  (ownership restoration on reopen, `lastEvidenceAt` tracking), and
+  `registryDbMigration.test.ts` (the `last_evidence_at` column upgrade).
+
+### Honest remaining constraints (superseded in part - see the newest session below)
+- The pinned gate's "immutability" is about *which commands run*, not
+  about sandboxing what those commands can observe while running - it
+  still executes the patch's own (possibly modified) source and test
+  files with a real compiler/test runner, by necessity: a fix cannot be
+  verified without running it. What is fully pinned is: the diff/path/
+  secret policy always runs first, the argv sequence itself is fixed
+  host-code constants, the environment those commands run in has no bot
+  credentials and a fixed, non-ambient identity, and a protected-path
+  change additionally needs independent review before any of this even
+  starts. **Update:** the gate's commands now also run inside a real
+  bubblewrap sandbox (see the "Bubblewrap sandbox trust boundary" session
+  below) - this constraint about *which commands run* is unchanged, but
+  the *execution environment* those commands observe is now no longer the
+  live checkout, has no network, and has no real `HOME`.
+- `assessDirectionRequestCredibility` is a keyword-plausibility heuristic,
+  not a semantic understanding of the request - a sufficiently creative
+  `humanQuestion` could still pass the pattern check while actually
+  describing ordinary technical uncertainty. It is a meaningful additional
+  bar (combined with the mandatory, schema-enforced `directionKind`), not a
+  perfect one; the schema-level requirement that `directionKind` be
+  present/absent in exactly the right cases is the harder guarantee here.
+- The independent patch reviewer is itself an LLM call with no tools and a
+  bounded diff - it can miss a subtle vulnerability the same way any code
+  reviewer (human or model) can. **Update:** a diff larger than
+  `MAX_REVIEWED_DIFF_CHARS` is no longer truncated and sent anyway - it is
+  now rejected deterministically, with no model call at all (see below).
+- Evidence-occurrence tracking (`lastEvidenceAt`) depends on the
+  development reviewer's findings citing a real trace-event timestamp in
+  `evidenceRefs`, or on the review's own `traceWindow.endTs` fallback; an
+  issue recorded by some future producer that supplies neither still falls
+  back to the coarser (and, as this session found, gameable)
+  `lastDetectedAt`-vs-baseline signal. This is a strictly better default
+  than before, not a perfect one for every possible future issue source.
+
+## Session N (final autonomy security/correctness audit fixes)
+
+A follow-up design audit found several remaining gaps in the autonomous
+development pipeline's own safety boundaries - all fixed in this session,
+with adversarial regression tests proving each one:
+
+### No agent-run interpreters/build tools, ever (`maintenance/autonomousPermissionHandler.ts`, `lib/autonomousDevelopmentAgent.ts`)
+- `bun` and `tsc` are now permanently removed from the autonomous coding
+  agent's shell allowlist - not just narrowed. Both are interpreters/build
+  tools capable of executing arbitrary project code (`bun test`/`bun run`
+  execute JS/TS; `tsc` loads and executes a `tsconfig.json`'s `plugins`
+  field). Only the deterministic host ever runs a compiler or test runner
+  now, always inside the pinned, sandboxed verification gate - never the
+  agent directly. The agent's own system prompt now says this explicitly
+  ("you cannot run bun/tsc/tests yourself; the deterministic host runs the
+  full sandboxed gate after you finish") so it stops wasting turns trying.
+- The remaining read-only allowlist (`cat`/`grep`/`rg`/`head`/`tail`/`ls`/
+  `wc`/`sort`/`uniq`/`diff`/`pwd`/`test`, plus read-only git inspection)
+  now fails closed when the runtime supplies no `possiblePaths` extraction
+  at all: for the narrow subset of commands whose non-flag arguments are
+  unambiguously path operands (`cat`/`head`/`tail`/`ls`/`wc`/`sort`/
+  `uniq`/`diff`/`test`), this module self-parses and independently
+  validates each argument as a path against the worktree; `grep`/`rg` (whose
+  first non-flag argument is a search pattern, not a path) and any command
+  with a flag this module cannot prove takes no separate value always fail
+  closed instead of guessing.
+- A direct `read`/`write` permission request's relative path is now
+  resolved against `worktreeRoot` before being judged, never against this
+  host process's own (arbitrary) working directory - previously a relative
+  path could be denied (or, in principle, misjudged) because it was
+  resolved against the wrong base directory entirely.
+
+### Bubblewrap sandbox trust boundary (`maintenance/bwrapSandbox.ts`)
+- Every pinned verification gate step (`tsc`, `bun test`) now runs inside a
+  real `bwrap` sandbox: no network (`--unshare-net`, plus `--unshare-all`
+  for every other namespace), no real `HOME` (`--clearenv` plus a
+  throwaway tmpfs one), no live-repository mount of anything beyond three
+  explicit mounts - the target worktree read-write at `/workspace` (the
+  only thing a gate step may ever mutate), a stable tool root's own
+  `node_modules` read-only at `/workspace/node_modules`, and the current
+  Bun executable read-only at `/bun` - plus `/usr`/`/lib`/`/lib64`/`/proc`/
+  `/dev`/a tmpfs `/tmp`, and `--die-with-parent`.
+- For the worker's own precommit gate, the sandboxed workspace *is* the
+  agent's already-isolated worktree - it may mutate only that worktree.
+  For live deploy/rollback verification, the gate never runs directly
+  against the live checkout at all: `autonomousDeployment.ts` now checks
+  out a brand-new, disposable, detached git worktree at the exact deployed
+  (or reverted) revision under ignored runtime data
+  (`bots/DayTrader/data/deploy-verify-worktrees/`), sandboxes *that*, and
+  always removes it afterward (pass or fail) - a changed test/source file
+  never executes with direct read/write access to the live checkout.
+- Fails closed: if the `bwrap` binary is missing, every sandboxed spawn
+  call rejects immediately rather than ever falling back to running the
+  gate unsandboxed. Every worker/deployment/rollback test still injects
+  `identitySandboxSpawnFactory` (no real sandbox) via the same options
+  plumbing as `spawn`/`agentRun`/`patchReview`; `bwrapSandbox.test.ts` adds
+  one focused test that exercises a real `bwrap` sandbox end to end
+  (workspace writable, `node_modules` read-only, no network).
+
+### Post-gate diff integrity (`maintenance/autonomousWorkerRunner.ts`)
+- The sandboxed gate step still executes the patch's own (possibly
+  untrusted) source/test files with read-write access to the worktree -
+  after it runs, the worktree is re-inspected from scratch (`git add -A`
+  again, so a test-created untracked file is never silently dropped or
+  silently smuggled in unreviewed, then a fresh `git diff --cached`). If
+  that post-gate diff is byte-for-byte identical to the pre-gate reviewed
+  diff, it is trusted outright; if it differs at all, the *entire*
+  path/secret/size policy gate and (if a protected path is now touched)
+  the independent patch review run again against the exact post-gate diff,
+  and only that exact, freshly re-reviewed index is ever committed.
+
+### Rename cannot bypass protected-path review (`maintenance/autonomousWorkerRunner.ts`, `maintenance/autonomousDeployment.ts`, `maintenance/isolatedWorkerRunner.ts`)
+- Every `git diff`/`git diff-tree` invocation feeding a path/policy/review/
+  deploy decision now passes `--no-renames`. Without it, a rename's
+  combined `"old/path => new/path"` numstat/diff text evades every
+  protected-path regex here (`(^|\/)bots\/DayTrader\/maintenance\/` is
+  never preceded by `^` or `/` in that combined string, since a space
+  precedes `bots/...`) - a plain filesystem rename of an ordinary file
+  *into* `bots/DayTrader/maintenance/` reached canary without the
+  independent reviewer ever being invoked. Confirmed by temporarily
+  reverting the fix: the regression test failed exactly as predicted, then
+  passed once `--no-renames` was restored.
+
+### Independent patch reviewer never truncates an oversized diff (`lib/autonomousPatchReviewer.ts`)
+- A diff over `MAX_REVIEWED_DIFF_CHARS` used to be truncated and sent to
+  the model anyway (with a note asking it to reject if the unreviewed
+  remainder mattered) - now it is rejected deterministically, with no
+  model call at all. "Approved" can no longer mean "the model only saw the
+  first N bytes of a much larger protected-path patch."
+
+### Deterministic canary starvation (`lib/maintenanceStore.ts`, `maintenance/runner.ts`)
+- `listMaintenanceWork` gained an `excludeRecipeId` filter applied at the
+  SQL layer, before `LIMIT`. The maintenance runner's step 1 (deterministic
+  recipe canaries) used to fetch a bounded page of *every* canary and
+  filter out `autonomous-development` rows in JS afterward - if that
+  high-volume recipe ever filled the whole bounded page, every
+  deterministic-recipe canary was silently starved out of it, every scan,
+  even though rows existed. The filter now happens before the page is
+  truncated.
+
+### Rollback lifecycle never leaves a canary stuck retrying an identical revert (`maintenance/autonomousDeployment.ts`)
+- `rollbackAutonomousDeployment` used to `throw` when the post-revert full
+  gate failed - leaving the maintenance work item sitting in `canary`
+  (never transitioned) even though the revert commit had genuinely already
+  landed in the live checkout. The next scan would then retry the
+  identical revert against the identical, still-broken reverted tree,
+  forever. It now persists a terminal `rolled_back` state with evidence
+  that the revert landed, still requests a deployment reload (the live
+  checkout's code really did change), and leaves the issue
+  development-owned/`failed` for a bounded retry or manual diagnosis -
+  never left in `canary`, never silently repeating the same revert.
+
+### Deploy/rollback still only ever touch the exact revision this call deployed/reverted
+- Unchanged from the previous session's fix, now additionally re-verified
+  in a disposable sandboxed worktree rather than the live checkout: a
+  post-deployment gate failure only reverts `HEAD` when *this call*
+  actually performed the cherry-pick; if the canary commit was already an
+  ancestor of `HEAD` before this call ran, it fails for a bounded retry
+  without touching the live checkout at all.
+
+### Testing approach
+- Every new pure/self-contained helper (`translateArgToSandbox`/
+  `buildBwrapArgv`/`createSandboxedSpawnFn`'s fail-closed path,
+  `isDiffReviewable`, `extractSelfParsedPathArgs`,
+  `ListMaintenanceWorkFilter.excludeRecipeId`) is unit-tested directly.
+  `bwrapSandbox.test.ts` includes exactly one real-`bwrap` integration test
+  proving the sandbox actually isolates network/HOME/filesystem; every
+  other worker/deployment/rollback test injects
+  `identitySandboxSpawnFactory` instead.
+- Adversarial regression tests prove each fix actually matters, not just
+  that the new code path exists: the rename-into-`maintenance/` bypass test
+  was confirmed to fail without `--no-renames` (then pass once restored);
+  the post-gate diff integrity tests make the sandboxed gate step itself
+  mutate the worktree (including into a protected path) and assert the
+  post-gate re-validation/re-review catches it; the rollback lifecycle
+  test asserts the maintenance work reaches a terminal state (never
+  `canary`) when the reverted tree itself fails its own gate.
+
+### A dedicated adversarial code-review pass on this session's own changes found two more real gaps, both fixed and regression-tested
+- **An empty (not merely absent) `possiblePaths` array was blindly trusted.**
+  `hasPossiblePaths` only guarded the self-parse fallback for the "the
+  runtime supplied nothing at all" case - if the runtime instead reported
+  `possiblePaths: []` (correctly or, worse, because its own extractor
+  under-reported a path), a command like `cat bot.env` was approved
+  outright with zero independent corroboration. Self-parsing for the safe
+  command subset (`cat`/`head`/`tail`/`ls`/`wc`/`uniq`/`diff`/`test`) now
+  always runs, regardless of whether/what `possiblePaths` reported -
+  `possiblePaths` is additional corroboration, never a substitute for it.
+  `grep`/`rg` still cannot be safely self-parsed (pattern-vs-path
+  ambiguity) and remain an accepted, documented residual limitation for
+  the "runtime reports an empty array that is actually wrong" case
+  specifically.
+- **`sort`/`uniq` were documented as read-only but can both write files.**
+  `sort -o FILE` writes its sorted output to an arbitrary file, and
+  `uniq`'s undocumented-by-flag second positional argument
+  (`uniq [OPTION]... [INPUT [OUTPUT]]`) is a write target, not a second
+  file to read - neither was excluded, and the generic "bare flag" check
+  couldn't reliably tell `-o` apart from a harmless bundled short flag.
+  `sort` is now excluded entirely (the same "no narrow safe mode is
+  possible" reasoning already applied to `awk`/`sed`/`find`); `uniq` stays
+  allowed but is denied outright whenever more than one non-flag argument
+  is present, regardless of whether that came from self-parsing or from
+  the runtime's own `possiblePaths`.
+
+### Honest remaining constraints
+- The pinned gate still executes the patch's own (possibly modified)
+  source and test files with a real compiler/test runner inside the
+  sandbox - a fix cannot be verified without running it, and the sandbox
+  is about *containing* that execution (no network, no real HOME, no live
+  checkout, read-only shared `node_modules`), not about making it
+  side-effect-free. A sufficiently determined sandbox-escape exploit in
+  the compiler/test runner itself is not something this pipeline can rule
+  out - it is exactly why the diff/path/secret policy and protected-path
+  review always run *before* the sandboxed gate, and why deploy/rollback
+  verification never runs in the live checkout even though bubblewrap is
+  trusted to contain the execution.
+- The self-parse fallback for `possiblePaths`-less shell requests is
+  intentionally conservative (fails closed on any flag it cannot prove
+  takes no separate value, and on `grep`/`rg` entirely) - it trades a few
+  false-negative denials of otherwise-harmless commands for never
+  guessing wrong about what argv actually points at.

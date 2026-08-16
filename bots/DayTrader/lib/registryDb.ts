@@ -133,6 +133,40 @@ export class RegistryError extends Error {
     }
 }
 
+/**
+ * Additive column migrations: `(table, column, ddl)` triples applied only
+ * when the column doesn't already exist, so upgrading an existing database
+ * file never fails and never loses data. Every new persisted field this
+ * registry gains must be added here, never via a destructive rebuild.
+ */
+const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+    // Bounded retry/backoff for autonomous development repair attempts: an
+    // issue that stays owner_layer='development' and status='failed' can
+    // carry a next_retry_at so the maintenance worker automatically reopens
+    // and retries it later instead of a human ever having to intervene.
+    { table: 'issues', column: 'next_retry_at', ddl: 'next_retry_at INTEGER' },
+    // Evidence-occurrence timestamp, distinct from last_detected_at (which
+    // only measures when this row was last *processed*). A development
+    // review can re-emit a finding that cites the exact same historical
+    // trace evidence it cited before - that must never look like a fresh
+    // post-deploy recurrence. last_evidence_at is the newest evidence
+    // timestamp ever associated with this issue (derived from the finding's
+    // evidenceRefs, or the review's trace window as a fallback - see
+    // developmentIssueBridge.ts), so a canary rollback can require
+    // last_evidence_at > deployedAt instead of trusting mere record
+    // processing time.
+    { table: 'issues', column: 'last_evidence_at', ddl: 'last_evidence_at INTEGER' },
+];
+
+function applyColumnMigrations(instance: Database): void {
+    for (const migration of COLUMN_MIGRATIONS) {
+        const columns = instance.query(`PRAGMA table_info(${migration.table})`).all() as Array<{ name: string }>;
+        if (!columns.some(column => column.name === migration.column)) {
+            instance.run(`ALTER TABLE ${migration.table} ADD COLUMN ${migration.ddl}`);
+        }
+    }
+}
+
 function openDatabase(path: string): Database {
     try {
         mkdirSync(dirname(path), { recursive: true });
@@ -150,6 +184,7 @@ function openDatabase(path: string): Database {
         instance.exec('PRAGMA busy_timeout = 5000');
         instance.exec('PRAGMA foreign_keys = ON');
         for (const statement of SCHEMA_STATEMENTS) instance.run(statement);
+        applyColumnMigrations(instance);
     } catch (error) {
         instance.close();
         throw new RegistryError(

@@ -171,3 +171,106 @@ describe('registry metrics - workflow candidates and maintenance', () => {
         expect(metrics.maintenance.byStatus.canary).toBe(1);
     });
 });
+
+describe('registry metrics - autonomous development pipeline', () => {
+    test('counts queued development-owned technical issues awaiting an autonomous attempt', () => {
+        recordIssue({
+            fingerprint: 'autonomous-queued',
+            ownerLayer: 'development',
+            severity: 'medium',
+            category: 'failure',
+            title: 'Queued technical issue',
+            description: 'test',
+            evidence: [],
+        });
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous.queued).toBe(1);
+    });
+
+    test('separates canaries awaiting deployment from canaries in observation, and reports the soonest deadline', () => {
+        const awaiting = proposeMaintenanceWork('issue-awaiting', 'autonomous-development');
+        transitionMaintenanceWork({ id: awaiting.id, status: 'canary', canaryOutcome: JSON.stringify({ awaitingDeployment: true }) });
+
+        const deployed = proposeMaintenanceWork('issue-deployed', 'autonomous-development');
+        transitionMaintenanceWork({
+            id: deployed.id,
+            status: 'canary',
+            canaryOutcome: JSON.stringify({ deployedRevision: 'a'.repeat(40), observationDeadlineAt: 12345 }),
+        });
+
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous.awaitingDeployment).toBe(1);
+        expect(metrics.autonomous.inObservation).toBe(1);
+        expect(metrics.autonomous.nextCanaryDeadlineAt).toBe(12345);
+    });
+
+    test('counts rolled-back autonomous canaries separately', () => {
+        const work = proposeMaintenanceWork('issue-rolled-back', 'autonomous-development');
+        transitionMaintenanceWork({ id: work.id, status: 'rolled_back' });
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous.rolledBack).toBe(1);
+    });
+
+    test('reports issues awaiting retry/backoff and the soonest retry time, distinct from deferred/human-owned counts', () => {
+        const issue = recordIssue({
+            fingerprint: 'autonomous-backoff',
+            ownerLayer: 'development',
+            severity: 'medium',
+            category: 'failure',
+            title: 'Failed autonomous attempt',
+            description: 'test',
+            evidence: [],
+        });
+        transitionIssue({ id: issue.id, status: 'failed', nextRetryAt: 99999 });
+
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous.awaitingRetry).toBe(1);
+        expect(metrics.autonomous.nextRetryAt).toBe(99999);
+        expect(metrics.humanIntervention.pendingHumanOwned).toBe(0); // stays development-owned, never counted as human-pending
+    });
+
+    test('reports requires_direction issues separately from escalations and ordinary deferrals', () => {
+        recordIssue({
+            fingerprint: 'requires-direction-metric',
+            ownerLayer: 'human',
+            severity: 'medium',
+            category: 'failure', // a technical category re-routed by requires_direction, not an escalation
+            title: 'Needs an external credential',
+            description: 'test',
+            evidence: [],
+        });
+        const metrics = computeRegistryMetrics();
+        expect(metrics.humanIntervention.requiresDirectionPending).toBe(1);
+        expect(metrics.humanIntervention.escalationsRaised).toBe(0);
+    });
+
+    test('sums attempts across development-owned technical issues', () => {
+        const issue = recordIssue({
+            fingerprint: 'attempts-issue',
+            ownerLayer: 'development',
+            severity: 'medium',
+            category: 'upgrade',
+            title: 'Multi-attempt issue',
+            description: 'test',
+            evidence: [],
+        });
+        transitionIssue({ id: issue.id, status: 'repairing', incrementAttempts: true });
+        transitionIssue({ id: issue.id, status: 'failed', incrementAttempts: true, nextRetryAt: 1000 });
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous.totalAttempts).toBe(2);
+    });
+
+    test('reports zeroed autonomous metrics on an empty registry', () => {
+        const metrics = computeRegistryMetrics();
+        expect(metrics.autonomous).toEqual({
+            queued: 0,
+            awaitingDeployment: 0,
+            inObservation: 0,
+            nextCanaryDeadlineAt: null,
+            rolledBack: 0,
+            awaitingRetry: 0,
+            nextRetryAt: null,
+            totalAttempts: 0,
+        });
+    });
+});

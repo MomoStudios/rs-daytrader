@@ -103,6 +103,30 @@ export function resolveRecipeCommand(argv: string[], bunExecutable = process.exe
 /** No credentials or runtime data ever reach a worker's child process. */
 export const MAINTENANCE_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
 
+/**
+ * Deterministic, fixed git author/committer identity for every commit the
+ * host itself makes (recipe commits, autonomous-repair commits, deploy
+ * cherry-picks/reverts). Git resolves identity from `GIT_AUTHOR_*`/
+ * `GIT_COMMITTER_*` environment variables before ever consulting
+ * `~/.gitconfig`, so this works even though {@link buildRestrictedEnv}
+ * intentionally points `HOME` at an isolated, gitconfig-free directory (to
+ * keep every worker/deploy/rollback git invocation from depending on
+ * whatever happens to be in the operator's real home directory). This
+ * identity is baked into `buildRestrictedEnv`'s own output, so it is only
+ * ever visible to the host's *own* git child processes
+ * (autonomousWorkerRunner.ts/isolatedWorkerRunner.ts/autonomousDeployment.ts)
+ * - never to the autonomous coding agent's tool subprocesses, which get a
+ * completely separate, full-ambient-env `CopilotClient` configuration (see
+ * autonomousDevelopmentAgent.ts) and never receive this restricted env at
+ * all.
+ */
+export const HOST_GIT_IDENTITY = {
+    GIT_AUTHOR_NAME: 'DayTrader Autonomous Maintenance',
+    GIT_AUTHOR_EMAIL: 'autonomous-maintenance@daytrader.invalid',
+    GIT_COMMITTER_NAME: 'DayTrader Autonomous Maintenance',
+    GIT_COMMITTER_EMAIL: 'autonomous-maintenance@daytrader.invalid',
+} as const;
+
 export function buildRestrictedEnv(
     source: NodeJS.ProcessEnv = process.env,
     isolatedHome?: string
@@ -113,5 +137,10 @@ export function buildRestrictedEnv(
         if (value !== undefined) restricted[key] = value;
     }
     if (isolatedHome) restricted.HOME = isolatedHome;
+    // Always present: the host's own git commands (commit/cherry-pick/
+    // revert) must never fail with "Please tell me who you are" just
+    // because the isolated HOME above has no ~/.gitconfig, and must never
+    // depend on the real operator's global git identity either.
+    Object.assign(restricted, HOST_GIT_IDENTITY);
     return restricted;
 }

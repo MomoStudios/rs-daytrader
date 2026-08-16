@@ -196,9 +196,9 @@ export async function runMaintenanceWork(
             }
         }
 
-        const diff = await spawnFn(['git', 'diff', '--stat'], { cwd: worktreePath, env: restrictedEnv, timeoutMs: 15_000 });
+        const diff = await spawnFn(['git', 'diff', '--stat', '--no-renames'], { cwd: worktreePath, env: restrictedEnv, timeoutMs: 15_000 });
         await spawnFn(['git', 'add', '-A'], { cwd: worktreePath, env: restrictedEnv, timeoutMs: 15_000 });
-        const stagedPaths = await spawnFn(['git', 'diff', '--cached', '--name-only'], {
+        const stagedPaths = await spawnFn(['git', 'diff', '--cached', '--no-renames', '--name-only'], {
             cwd: worktreePath,
             env: restrictedEnv,
             timeoutMs: 15_000,
@@ -321,7 +321,7 @@ export async function promoteMaintenanceWork(
         );
     }
     const paths = await spawnFn(
-        ['git', 'diff-tree', '--no-commit-id', '--name-only', '-r', work.commitSha],
+        ['git', 'diff-tree', '--no-commit-id', '--no-renames', '--name-only', '-r', work.commitSha],
         { cwd: repoRoot, env: restrictedEnv, timeoutMs: 15_000 }
     );
     if (!paths.success) throw new Error(`Cannot inspect canary commit '${work.commitSha}': ${paths.stderr}`);

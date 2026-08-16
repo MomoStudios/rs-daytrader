@@ -183,6 +183,52 @@ export function getMaintenanceWork(id: string): MaintenanceWorkRecord | null {
 export interface ListMaintenanceWorkFilter {
     status?: MaintenanceWorkStatus;
     issueId?: string;
+    /** Filters at the SQL layer (before LIMIT) so a recipe with many rows can never starve another recipe's rows out of a bounded page. */
+    recipeId?: string;
+    /**
+     * Excludes one recipe id at the SQL layer (before LIMIT) - the
+     * complement of `recipeId`. Without this, a caller that wants "every
+     * deterministic-recipe canary" but can only filter *in* by a positive
+     * `recipeId` (or filter *out* in application code after the row page
+     * is already truncated) risks starvation: if a high-volume recipe
+     * (e.g. the generic autonomous-development fallback) fills every slot
+     * of a bounded LIMIT, a JS-side `.filter()` applied afterward can
+     * silently see zero rows for every other recipe, even when they exist,
+     * every single scan.
+     */
+    excludeRecipeId?: string;
+    /**
+     * Filters at the SQL layer (before LIMIT) on whether a canary has
+     * actually been deployed yet, via `json_extract(canary_outcome,
+     * '$.deployedRevision')`. Without this, a caller that only ever wants
+     * one subtype (e.g. "not-yet-deployed pending canaries" for the
+     * deploy step, or "already-deployed canaries" for the evaluation
+     * step) but filters the *other* subtype out in application code after
+     * a small LIMIT risks the exact same starvation `excludeRecipeId`
+     * guards against: if enough rows of the wrong subtype sort ahead of
+     * every row of the right subtype, a JS-side `.filter()`/`continue`
+     * applied afterward can silently see zero usable rows even though
+     * plenty exist, every single scan.
+     * - `'pending'`: `canary_outcome` is NULL, or has no
+     *   `deployedRevision` yet (never deployed).
+     * - `'deployed'`: `canary_outcome` has a non-null `deployedRevision`.
+     */
+    canaryDeploymentState?: 'pending' | 'deployed';
+    /**
+     * Row ordering, applied before LIMIT. Defaults to `'updated_desc'`
+     * (unchanged prior behavior). `'updated_asc'` processes the
+     * *oldest*-touched rows first - important for a deploy/evaluation
+     * queue, where a small number of canaries that keep getting touched
+     * (e.g. repeatedly extended during observation) would otherwise keep
+     * bubbling to the front of a `DESC` sort and crowd genuinely older,
+     * not-yet-processed rows out of a bounded page forever.
+     * `'canary_deadline_asc'` orders deployed canaries by their soonest
+     * `observationDeadlineAt` first (NULLs last) - the ones closest to
+     * needing a decision, so a bounded page always covers the most urgent
+     * rows first even when far more deployed canaries exist than fit in
+     * one page.
+     */
+    orderBy?: 'updated_desc' | 'updated_asc' | 'canary_deadline_asc';
     limit?: number;
 }
 
@@ -197,10 +243,36 @@ export function listMaintenanceWork(filter: ListMaintenanceWorkFilter = {}): Mai
         clauses.push('issue_id = ?');
         params.push(filter.issueId);
     }
+    if (filter.recipeId) {
+        clauses.push('recipe_id = ?');
+        params.push(filter.recipeId);
+    }
+    if (filter.excludeRecipeId) {
+        clauses.push('recipe_id != ?');
+        params.push(filter.excludeRecipeId);
+    }
+    if (filter.canaryDeploymentState === 'pending') {
+        clauses.push("(canary_outcome IS NULL OR json_extract(canary_outcome, '$.deployedRevision') IS NULL)");
+    } else if (filter.canaryDeploymentState === 'deployed') {
+        clauses.push("(canary_outcome IS NOT NULL AND json_extract(canary_outcome, '$.deployedRevision') IS NOT NULL)");
+    }
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const limit = Math.max(1, Math.min(filter.limit ?? 200, 1000));
+    let orderClause: string;
+    if (filter.orderBy === 'updated_asc') {
+        orderClause = 'ORDER BY updated_at ASC';
+    } else if (filter.orderBy === 'canary_deadline_asc') {
+        // NULL deadlines sort last (never ahead of a canary that actually
+        // has one to act on), then earliest deadline first, then oldest
+        // updated_at as a stable tie-breaker.
+        orderClause =
+            "ORDER BY (json_extract(canary_outcome, '$.observationDeadlineAt') IS NULL) ASC, " +
+            "json_extract(canary_outcome, '$.observationDeadlineAt') ASC, updated_at ASC";
+    } else {
+        orderClause = 'ORDER BY updated_at DESC';
+    }
     const rows = getRegistryDb()
-        .query(`SELECT * FROM maintenance_work ${where} ORDER BY updated_at DESC LIMIT ?`)
+        .query(`SELECT * FROM maintenance_work ${where} ${orderClause} LIMIT ?`)
         .all(...params, limit) as MaintenanceRow[];
     return rows.map(rowToRecord);
 }

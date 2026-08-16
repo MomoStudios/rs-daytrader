@@ -8,9 +8,16 @@ import { buildGameTrace } from '../lib/gameTrace';
 import { log } from '../lib/logger';
 import { retrieveServerEvidence } from '../lib/serverKnowledge';
 import { recordRuntimeHeartbeat } from '../lib/runtimeHealth';
+import { captureStartupGeneration, isReloadRequested } from '../lib/deploymentReload';
 
 const brain = new DevelopmentBrain();
 let stopping = false;
+// Captured once at startup: if the autonomous maintenance pipeline deploys
+// or rolls back a commit while this process is running, its module graph
+// is stale. Rather than reason about hot-reloading, this process finishes
+// whatever it's doing and exits cleanly so the supervisor restarts it with
+// freshly imported code (see lib/deploymentReload.ts).
+const startupGeneration = captureStartupGeneration();
 
 async function runReview(): Promise<void> {
     const work = claimDevelopmentWork();
@@ -58,12 +65,23 @@ async function main(): Promise<void> {
         model: brain.getModel(),
         reasoningEffort: 'medium',
         intervalMinutes: 30,
+        startupGeneration,
     });
     while (!stopping) {
-        recordRuntimeHeartbeat('development-reviewer', 'scan');
+        recordRuntimeHeartbeat('development-reviewer', 'scan', startupGeneration);
         await runReview();
+        // Checked only between iterations - never mid-review - so a review
+        // already in flight always finishes and persists before this
+        // process gives up its turn to the supervisor's restart.
+        if (isReloadRequested(startupGeneration)) {
+            log('note', { msg: 'newer deployment detected; development reviewer restarting for fresh code', startupGeneration });
+            stopping = true;
+            break;
+        }
         await Bun.sleep(10_000);
     }
+    await brain.stop();
+    process.exit(0);
 }
 
 async function stop(): Promise<void> {
