@@ -111,9 +111,8 @@ export function evaluatePathAccess(worktreeRoot: string, requestedPath: string):
         return { allowed: false, reason: `path escapes the isolated worktree: ${requestedPath}` };
     }
     const relativePosix = toPosix(rel);
-    const fullPosix = toPosix(canonicalTarget);
     for (const pattern of BLOCKED_PATH_PATTERNS) {
-        if (pattern.test(relativePosix) || pattern.test(fullPosix)) {
+        if (pattern.test(relativePosix)) {
             return { allowed: false, reason: `path matches a blocked pattern (${pattern}): ${requestedPath}` };
         }
     }
@@ -271,7 +270,9 @@ export interface ShellCommandSegmentLike {
 function evaluateShellSegment(segment: ShellCommandSegmentLike, worktreeRoot: string, hasPossiblePaths: boolean): PolicyDecision {
     const identifier = segment.identifier.trim().toLowerCase().split(/\s+/)[0] ?? '';
     const tokens = segment.fullCommandText.trim().split(/\s+/);
-    const subcommand = (tokens[1] ?? '').toLowerCase();
+    const gitArgs = tokens.slice(1);
+    while (gitArgs[0] === '--no-pager') gitArgs.shift();
+    const subcommand = (gitArgs[0] ?? '').toLowerCase();
 
     if (identifier === 'git') {
         if (DENIED_GIT_SUBCOMMANDS.has(subcommand)) {

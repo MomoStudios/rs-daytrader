@@ -46,6 +46,13 @@ describe('autonomousPermissionHandler - path canonicalization and confinement', 
         expect(result.allowed).toBe(true);
     });
 
+    test('does not reject an isolated worktree merely because its host parent is a runtime data directory', () => {
+        const nested = join(SCRATCH_DIR, 'bots', 'DayTrader', 'data', 'autonomous-worktrees', 'work');
+        mkdirSync(join(nested, 'lib'), { recursive: true });
+        expect(evaluatePathAccess(nested, join(nested, 'lib', 'thing.ts')).allowed).toBe(true);
+        expect(evaluatePathAccess(nested, join(nested, 'bots', 'DayTrader', 'data', 'state.json')).allowed).toBe(false);
+    });
+
     test('maps the Copilot runtime /workspace alias into the isolated worktree', () => {
         expect(evaluatePathAccess(worktree, '/workspace/lib/thing.ts').allowed).toBe(true);
     });
@@ -146,6 +153,11 @@ describe('autonomousPermissionHandler - shell allow/deny policy', () => {
             worktree
         );
         expect(result.allowed).toBe(true);
+    });
+
+    test('allows the safe git --no-pager global option before an inspection subcommand', () => {
+        expect(shell('git --no-pager status').allowed).toBe(true);
+        expect(shell('git --no-pager log -n 5').allowed).toBe(true);
     });
 
     test('denies mutating/remote git subcommands', () => {
