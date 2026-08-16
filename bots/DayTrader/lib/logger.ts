@@ -11,8 +11,20 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const LOG_PATH = join(DATA_DIR, 'decisions.jsonl');
+let dataDir = join(__dirname, '..', 'data');
+
+function logPath(): string {
+    return join(dataDir, 'decisions.jsonl');
+}
+
+/**
+ * Test-only hook: redirect the append-only log to an isolated directory so
+ * tests exercising code that calls log() never write into the real
+ * runtime data folder. Never called from production code paths.
+ */
+export function _setLogDataDirForTests(dir: string): void {
+    dataDir = dir;
+}
 
 export type LogEventType =
     | 'chat_classified'
@@ -29,8 +41,16 @@ export type LogEventType =
     | 'operator_step'
     | 'operator_stall'
     | 'operator_escalation'
+    | 'operator_escalation_timeout'
+    | 'operator_escalation_acknowledged'
+    | 'operator_issue'
+    | 'operator_remediation'
+    | 'operator_remediation_applied'
     | 'development_review'
     | 'development_error'
+    | 'development_issue'
+    | 'workflow_candidate'
+    | 'maintenance_work'
     | 'character_trace'
     | 'goal_completed'
     | 'error'
@@ -43,14 +63,14 @@ export interface LogEvent {
 }
 
 function ensureDataDir(): void {
-    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+    if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
 }
 
 export function log(type: LogEventType, data: Record<string, unknown> = {}): void {
     ensureDataDir();
     const event: LogEvent = { ts: Date.now(), type, ...data };
     try {
-        appendFileSync(LOG_PATH, JSON.stringify(event) + '\n');
+        appendFileSync(logPath(), JSON.stringify(event) + '\n');
     } catch (e) {
         console.warn(`[logger] Failed to append log: ${e}`);
     }

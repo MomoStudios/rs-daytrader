@@ -44,7 +44,7 @@ const ITEM_NOUN_PATTERN =
 function extractPrice(text: string): number | null {
     // "500gp", "500 gp", "5k", "1.5m", "2m"
     const m = text.match(/(\d+(?:\.\d+)?)\s*(k|m)?\s*(gp|coins?)?/i);
-    if (!m) return null;
+    if (!m || !m[1]) return null;
     const num = parseFloat(m[1]);
     if (isNaN(num)) return null;
     const suffix = (m[2] || '').toLowerCase();

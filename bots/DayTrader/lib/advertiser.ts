@@ -58,6 +58,7 @@ let templateCursor = 0;
 function pickTemplate(): AdTemplate {
     const t = TEMPLATES[templateCursor % TEMPLATES.length];
     templateCursor += 1;
+    if (!t) throw new Error('advertiser template rotation is empty');
     return t;
 }
 

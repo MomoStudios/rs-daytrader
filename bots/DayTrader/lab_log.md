@@ -719,3 +719,228 @@ The main controller continues under `run-main-loop.sh`.
 - Character moved from Lumbridge/Draynor to SE Varrock.
 - Mining advanced from 78 to 79 and continued toward 80 with an active workflow,
   no failure, and no escalation.
+
+## Session 15 (systemic-autonomy redesign: issue registry, workflow candidates,
+maintenance worker, escalation ownership, execution feedback, supervisor)
+
+### Motivation
+An audit of the layered architecture found several systemic-trust gaps:
+escalation was a single unowned JSON flag that silent resets could clear;
+development-review workflow proposals and operator-produced reusable
+workflows were written straight into the production workflow registry with
+no validation lifecycle; development findings were logged but never became
+trackable work; there was no path from "the development reviewer found a
+real code-level problem" to a safely-bounded automatic fix; and DayTrader's
+own TypeScript was outside the repo's typecheck/test gate entirely.
+
+### Persistent registry (`bots/DayTrader/lib/registryDb.ts`)
+- A single `bun:sqlite` database (`data/registry.sqlite`, WAL journal mode,
+  5s busy timeout) coordinates every new lifecycle-tracked record type
+  across the main loop, development reviewer, maintenance worker, and
+  observer processes. JSON files (`operator.json`, `development.json`,
+  `workflows.json`, ...) are untouched and remain the source of truth for
+  existing consumers; the registry is additive.
+- Every mutation goes through `withTransaction`, and corrupt/permission
+  failures throw a descriptive `RegistryError` instead of silently falling
+  back to an empty registry.
+
+### Typed issue registry (`lib/issueRegistry.ts`)
+- Lifecycle: `detected -> triaged -> repairing -> validating -> canary ->
+  resolved | rejected | deferred | failed`.
+- Fingerprinted dedup: a recurring detection of the same fingerprint merges
+  evidence into the existing row; a detection against a previously
+  resolved/rejected/deferred/failed fingerprint **reopens** it and
+  increments `recurrenceCount` instead of creating a duplicate.
+- Typed `ownerLayer` (`deterministic|operator|strategist|development|human`),
+  `severity`, `category`, a severity-scaled `deadlineAt`, `attempts`,
+  `resolutionEvidence`, and links to a related workflow/review.
+
+### Workflow candidate lifecycle (`lib/workflowCandidateStore.ts`)
+- `proposed -> statically_verified -> canary -> promoted | rejected |
+  rolled_back`. Static verification re-parses the workflow (schema, bounded
+  step count, duplicate step ids), and checks material-reservation
+  compatibility when reservation context is available.
+- **Neither the development reviewer's `workflowProposals` nor the
+  operator's own reusable-workflow output is ever written directly into
+  `workflows.json` (the production registry) any more.** Both go through
+  `proposeWorkflowCandidate`; only `recordWorkflowCandidateOutcome`
+  promoting a candidate after real canary successes calls
+  `storeReusableWorkflow`. A failure after promotion rolls the workflow
+  back out of production via `removeReusableWorkflow`.
+- `operatorCoordinator.ts`'s `installDecision` is now the single path for
+  both a fresh plan and a diagnosis repair; it proposes a candidate for any
+  reusable workflow and records success/failure against the workflow's
+  content hash as steps complete or a stall forces a replacement.
+- Statically verified development proposals are exposed to the operator as
+  canary workflow options. They remain outside `workflows.json` until real
+  executions satisfy the promotion threshold.
+
+### Development findings become typed issues (`lib/developmentIssueBridge.ts`)
+- The development reviewer stays completely tool-free; it can only emit the
+  bounded structured findings. Findings can explicitly identify
+  `systemic_code` owned by `development`; `completeDevelopmentWork` maps
+  each non-`success` finding through `findingToIssueInput` (pure, unit
+  tested) into `recordIssue`, deterministically choosing `ownerLayer` from
+  `finding.target` (`workflow` -> `development`, `observer` -> `human`,
+  `strategist`/`operator` -> themselves).
+
+### Maintenance worker: bounded, queued, non-LLM repair
+  (`bots/DayTrader/maintenance/`)
+- `workerContract.ts` is the **only** place a repair recipe is defined: an
+  id, an exact allowlist of argv commands (never a shell string), a
+  mandatory test command, a bounded path allowlist, a duration budget, and
+  a deterministic (keyword/category, non-LLM) `matchesIssue` predicate.
+  Only `category: 'systemic_code'` issues are ever eligible, and only when
+  an approved recipe's predicate matches - everything else stays
+  owned/deferred, never guessed at.
+- `isolatedWorkerRunner.ts` runs a matched recipe inside a real, isolated
+  `git worktree` (a throwaway branch off `HEAD`), with a restricted child
+  environment (`PATH`/`LANG`/`TMPDIR` plus a fresh isolated `HOME` - no bot
+  credentials or user credential stores). Mandatory tests must pass before anything is committed.
+  The worktree is always removed afterward; the commit/branch survive only
+  if a canary commit was produced. Recipes explicitly marked `autoPromote`
+  are deployed by cherry-picking the inspected commit into a clean target,
+  rerunning the mandatory verification, and recording the deployed revision.
+  A failed post-deployment check automatically reverts the deployment.
+- `maintenance/runner.ts` is a supervised process that periodically scans
+  for open `systemic_code` issues with a matching approved recipe and runs
+  them; issues without one are left alone entirely.
+- Verified end-to-end against a real scratch git repository (not this
+  checkout): isolated worktree creation, the allowlisted repair commands,
+  mandatory tests, diff/commit, canary, promote, and reject all exercised
+  with real `git` subprocess calls (see
+  `test/isolatedWorkerRunner.test.ts`).
+
+### Escalation ownership (`lib/escalationStore.ts`)
+- Replaced "escalation as an unowned global flag" with an identified,
+  tracked `category: 'escalation'` issue: owner layer, status, deadline,
+  and resolution. `operator.json`'s `pendingEscalation` field still exists
+  for backward-compatible JSON consumers (the observer dashboard, the main
+  loop's "pause execution" guard) but only `escalationStore.ts` is allowed
+  to set/clear it now.
+- `resetOperatorWorkflow()` no longer clears `pendingEscalation` as a side
+  effect (this was the audit's specific caution) - only workflow execution
+  progress. Every place that installs a new plan/diagnosis explicitly
+  acknowledges a prior pending escalation (`acknowledgeOperatorEscalation`)
+  and/or raises its own (`raiseOperatorEscalation`).
+- `checkOperatorEscalationTimeout()` runs every main-loop tick: an
+  escalation whose deadline has passed is force-cleared and its issue is
+  deferred to human review - it never blocks forever, and it never resumes
+  the stalled workflow (which was already reset before the escalation was
+  raised), so safety is preserved.
+
+### Deterministic operator remediation before model diagnosis
+  (`lib/operatorRemediation.ts`)
+- A pure `decideRemediation(stall, remediationState, budgets)` routes each
+  stall reason to a bounded deterministic action before any model call:
+  `blocked_ui` -> bounded `dismiss_blocking_ui` attempts; `state_stale` ->
+  bounded waits (the SDK's own `autoReconnect` does the actual
+  reconnecting in the background - `getState()` never refreshes by
+  itself); `possible_competition`/`no_progress` -> bounded wait+replan;
+  `repeated_failure` -> a bounded number of model diagnosis calls before
+  escalating. Attempt counters live on `OperatorRuntimeState.remediation`
+  and reset whenever the stall reason changes.
+- Reservation violations no longer throw inside
+  `operatorCoordinator.installDecision` - they become a
+  `category: 'reservation_violation'` issue plus a `policy_violation`
+  escalation, so a bad plan is safely deferred instead of crashing the
+  runtime loop.
+
+### Execution feedback and metrics
+  (`lib/executionFeedback.ts`, `lib/registryMetrics.ts`)
+- Every workflow completion and every stall/remediation decision writes an
+  `execution_feedback` row linking issue/workflow/step/directive/outcome/
+  evidence.
+- `computeRegistryMetrics()` aggregates mean issue resolution time,
+  recurrence totals, overdue counts, human-intervention load
+  (human-owned/deferred issues, escalations raised/timed-out), and
+  workflow-candidate promotion rate.
+- `gameTrace.ts`'s `buildGameTrace()` now includes a bounded, summarized
+  `systemicIssues` list (open issues, most severe/oldest first) and
+  `registryMetrics` in the trace fed to the development reviewer, so it can
+  reference an already-tracked problem instead of re-reporting it.
+
+### Observer API additions (`observer/server.ts`)
+- New read endpoints: `GET /api/issues`, `/api/maintenance`,
+  `/api/workflow-candidates`, `/api/metrics`, `/api/health`. `statusPayload`
+  also carries bounded `issues`/`maintenance`/`workflowCandidates`/`metrics`/
+  `health` sections.
+- One new authenticated control endpoint,
+  `POST /api/issues/:id/transition` (same `x-observer-token` + origin check
+  as the existing instruction/review endpoints), for a human to
+  triage/defer/resolve an issue.
+
+### Unified supervisor (`bots/DayTrader/run-supervisor.ts` /
+  `run-supervisor.sh`)
+- Runs the lite client, main loop, development reviewer, and maintenance
+  worker together, each with its **own** restart backoff: a run shorter
+  than a per-child "fast failure" threshold doubles that child's restart
+  delay (capped), while a longer clean run resets it - so a genuine
+  crash-loop backs off instead of hammering the game server or model APIs,
+  while a single transient failure still restarts promptly.
+- `SIGINT`/`SIGTERM` are forwarded to every child; the supervisor waits up
+  to 8s for clean shutdown before force-exiting.
+- The existing individual scripts (`run-lite-client.sh`, `run-main-loop.sh`,
+  `run-development-agent.sh`, `run-observer.sh`) are unchanged and still
+  work standalone. `run-observer.sh` deliberately stays outside the
+  supervisor (single-run dashboard process, by design).
+- **Headless operation, including development services:**
+  ```bash
+  # Everything supervised together (recommended for unattended operation):
+  bash bots/DayTrader/run-supervisor.sh &
+
+  # ...or run each process individually, exactly as before:
+  bash bots/DayTrader/run-lite-client.sh &
+  bash bots/DayTrader/run-main-loop.sh &
+  bash bots/DayTrader/run-development-agent.sh &   # development reviewer
+  bun bots/DayTrader/maintenance/runner.ts &        # maintenance worker
+  bun bots/DayTrader/observer/server.ts &            # optional dashboard
+  ```
+  The maintenance worker and development reviewer are both safe to omit for
+  a minimal unattended run - the main loop and lite client alone still play
+  the game; without the reviewer/worker, issues simply accumulate in the
+  registry for later triage instead of being investigated/auto-repaired.
+
+### Quality gate
+- `bots/DayTrader/tsconfig.json` mirrors the root compiler options, scoped
+  to `bots/DayTrader/**/*.ts` only (so `server/engine`/`server/webclient`'s
+  own vendored code is never pulled into this typecheck just because
+  DayTrader imports a few `sdk/*` types). `bun run typecheck:daytrader` is
+  part of `bun run check`.
+- `bun run test` now also runs `bots/DayTrader/test`.
+- Fixed ~16 pre-existing `noUncheckedIndexedAccess`/possibly-undefined
+  errors surfaced by adding DayTrader to the shared, stricter root
+  compiler options (`advertiser.ts`, `chatMonitor.ts`, `economy.ts`,
+  `priceBook.ts`, `stateStore.ts`, and one test fixture's implicit type).
+
+### Testing approach
+- All new SQLite-backed stores use an injectable `':memory:'` database
+  (`registryDb._resetRegistryForTests`) and, where they also touch a JSON
+  file or the append-only log, a redirected data directory
+  (`workflowStore._setWorkflowsDataDirForTests`,
+  `operatorStore._resetOperatorStateForTests`,
+  `logger._setLogDataDirForTests`) so `bun test` never writes into the real
+  `bots/DayTrader/data/` folder.
+- The maintenance worker is tested end-to-end against a real, throwaway git
+  repository (init/commit/worktree/diff/commit/rollback), not mocked -
+  the only thing that's a stand-in is the recipe's *target* repo, not the
+  git mechanics.
+- The supervisor's backoff math is pure/exported and unit tested
+  (`isFastFailure`, `computeRestartDelayMs`) behind an `import.meta.main`
+  guard, so importing it for a test never spawns a real child process.
+
+### Honest remaining constraints
+- Only one automatic deterministic repair recipe (`regenerate-api-docs`)
+  ships today; adding another recipe is a reviewed code change to
+  `workerContract.ts`, not a runtime decision. Unsupported issues remain
+  explicitly owned and visible rather than being falsely marked resolved.
+- Workflow-candidate canary promotion currently requires the *live* bot to
+  actually execute the workflow to completion twice (or once, if a lower
+  threshold is passed) - there's no synthetic/simulated canary runner, so
+  promotion happens at real gameplay speed.
+- Escalation/issue coordination across processes still relies on
+  operator.json's file-based cache for the hot `pendingEscalation` flag
+  (the SQLite issue row is authoritative for lifecycle/ownership); this is
+  consistent with the existing JSON-store pattern but means a process that
+  never calls `loadOperatorState()` won't see a fresh escalation flag until
+  it does.

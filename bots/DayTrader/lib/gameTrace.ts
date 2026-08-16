@@ -1,6 +1,8 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { listIssues, type IssueSeverity } from './issueRegistry';
+import { computeRegistryMetrics, type RegistryMetrics } from './registryMetrics';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -39,6 +41,20 @@ export interface GameTraceSummary {
     };
     repeatedFailures: Array<{ message: string; count: number }>;
     timeline: TraceEvent[];
+    /** Unresolved systemic issues the development reviewer should weigh in
+     *  on - deliberately bounded and summarized, not the full registry. */
+    systemicIssues: Array<{
+        id: string;
+        category: string;
+        ownerLayer: string;
+        severity: string;
+        status: string;
+        title: string;
+        attempts: number;
+        recurrenceCount: number;
+        ageMs: number;
+    }>;
+    registryMetrics: RegistryMetrics;
 }
 
 function readJson(name: string): unknown {
@@ -127,6 +143,29 @@ function conciseEvent(event: TraceEvent): TraceEvent {
     return concise;
 }
 
+const SEVERITY_RANK: Record<IssueSeverity, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+
+function summarizeSystemicIssues(limit = 30): GameTraceSummary['systemicIssues'] {
+    const now = Date.now();
+    return listIssues({ openOnly: true, limit: 500 })
+        .sort(
+            (a, b) =>
+                SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.firstDetectedAt - b.firstDetectedAt
+        )
+        .slice(0, limit)
+        .map(issue => ({
+            id: issue.id,
+            category: issue.category,
+            ownerLayer: issue.ownerLayer,
+            severity: issue.severity,
+            status: issue.status,
+            title: issue.title,
+            attempts: issue.attempts,
+            recurrenceCount: issue.recurrenceCount,
+            ageMs: now - issue.firstDetectedAt,
+        }));
+}
+
 export function buildGameTrace(hours = 4, maxEvents = 4_000): GameTraceSummary {
     const events = recentEvents(hours, maxEvents);
     const counts: Record<string, number> = {};
@@ -210,5 +249,7 @@ export function buildGameTrace(hours = 4, maxEvents = 4_000): GameTraceSummary {
             .sort((a, b) => b.count - a.count)
             .slice(0, 20),
         timeline,
+        systemicIssues: summarizeSystemicIssues(),
+        registryMetrics: computeRegistryMetrics(),
     };
 }

@@ -8,6 +8,7 @@ import {
     sanitizePersistentStateValue,
 } from '../lib/gameTrace';
 import { retrieveServerEvidence } from '../lib/serverKnowledge';
+import { _resetRegistryForTests } from '../lib/registryDb';
 
 describe('development agent boundary', () => {
     test('validates bounded research queries', () => {
@@ -118,15 +119,41 @@ describe('development agent boundary', () => {
             workflowProposals: [],
             noActionReason: null,
         });
+
         expect(review.health).toBe('healthy');
         expect(review.findings[0]?.severity).toBe('high');
     });
 
+    test('accepts development-owned systemic code findings', () => {
+        const review = parseDevelopmentReview({
+            summary: 'A recurring control-plane defect needs repository repair.',
+            health: 'blocked',
+            findings: [{
+                severity: 'high',
+                kind: 'systemic_code',
+                title: 'sdk/API.md is stale',
+                evidenceRefs: ['sdk/API.md:1'],
+                diagnosis: 'Generated API documentation drifted from source.',
+                recommendation: 'Run the approved API documentation repair.',
+                target: 'development',
+            }],
+            knowledgeUpdates: [],
+            workflowProposals: [],
+            noActionReason: null,
+        });
+        expect(review.findings[0]?.kind).toBe('systemic_code');
+        expect(review.findings[0]?.target).toBe('development');
+    });
+
     test('builds a bounded multi-hour trace without raw chat text', () => {
+        _resetRegistryForTests(':memory:');
         const trace = buildGameTrace(4, 200);
         expect(trace.timeline.length).toBeLessThanOrEqual(700);
         expect(trace.window.hours).toBe(4);
         expect(trace.timeline.every(event => !('text' in event))).toBe(true);
+        expect(trace.systemicIssues).toEqual([]);
+        expect(trace.registryMetrics.issues.total).toBe(0);
+        _resetRegistryForTests(':memory:');
     });
 
     test('redacts raw scam chat from persisted state snapshots', () => {

@@ -11,6 +11,10 @@ import {
     enqueueDevelopmentReview,
     getDevelopmentState,
 } from '../lib/developmentStore';
+import { listIssues, transitionIssue, type IssueStatus } from '../lib/issueRegistry';
+import { listWorkflowCandidates } from '../lib/workflowCandidateStore';
+import { listMaintenanceWork } from '../lib/maintenanceStore';
+import { computeRegistryMetrics } from '../lib/registryMetrics';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BOT_DIR = join(__dirname, '..');
@@ -237,6 +241,24 @@ function statusPayload(): object {
         },
         chat: readableChat(),
         events: recentEvents(),
+        issues: listIssues({ openOnly: true, limit: 100 }),
+        maintenance: listMaintenanceWork({ limit: 50 }),
+        workflowCandidates: listWorkflowCandidates({ limit: 50 }),
+        metrics: computeRegistryMetrics(),
+        health: healthPayload(),
+    };
+}
+
+function healthPayload(): object {
+    const metrics = computeRegistryMetrics();
+    return {
+        observerConnected: sdk.isConnected(),
+        observerAuthenticated: sdk.isAuthenticated(),
+        stateAgeMs: sdk.getStateAge(),
+        openIssues: metrics.issues.open,
+        overdueIssues: metrics.issues.overdueCount,
+        pendingHumanOwned: metrics.humanIntervention.pendingHumanOwned,
+        maintenanceInFlight: (metrics.maintenance.byStatus.queued ?? 0) + (metrics.maintenance.byStatus.running ?? 0),
     };
 }
 
@@ -404,10 +426,12 @@ const server = Bun.serve({
             'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer',
         };
+        const issueTransitionMatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/transition$/);
         const isControlRequest =
             request.method === 'POST' &&
             (url.pathname === '/api/instructions' ||
-                url.pathname === '/api/development-reviews');
+                url.pathname === '/api/development-reviews' ||
+                issueTransitionMatch !== null);
         if (isControlRequest) {
             const origin = request.headers.get('origin');
             const expectedOrigin = `http://127.0.0.1:${PORT}`;
@@ -423,6 +447,48 @@ const server = Bun.serve({
         }
         if (url.pathname === '/api/status') {
             return Response.json(statusPayload(), { headers });
+        }
+        if (url.pathname === '/api/issues') {
+            const statusFilter = url.searchParams.get('status') as IssueStatus | null;
+            return Response.json(
+                { issues: listIssues({ status: statusFilter ?? undefined, openOnly: !statusFilter, limit: 200 }) },
+                { headers }
+            );
+        }
+        if (url.pathname === '/api/maintenance') {
+            return Response.json({ maintenance: listMaintenanceWork({ limit: 100 }) }, { headers });
+        }
+        if (url.pathname === '/api/workflow-candidates') {
+            return Response.json({ candidates: listWorkflowCandidates({ limit: 100 }) }, { headers });
+        }
+        if (url.pathname === '/api/metrics') {
+            return Response.json(computeRegistryMetrics(), { headers });
+        }
+        if (url.pathname === '/api/health') {
+            return Response.json(healthPayload(), { headers });
+        }
+        if (issueTransitionMatch && request.method === 'POST') {
+            const issueId = issueTransitionMatch[1];
+            return request
+                .json()
+                .then(body => {
+                    if (typeof body !== 'object' || body === null || !('status' in body)) {
+                        throw new Error('body must include a status');
+                    }
+                    const { status, note, resolutionEvidence } = body as {
+                        status: string;
+                        note?: string;
+                        resolutionEvidence?: string;
+                    };
+                    const updated = transitionIssue({
+                        id: String(issueId),
+                        status: status as IssueStatus,
+                        note,
+                        resolutionEvidence,
+                    });
+                    return Response.json({ issue: updated }, { headers });
+                })
+                .catch(error => Response.json({ error: String(error) }, { status: 400, headers }));
         }
         if (url.pathname === '/api/instructions' && request.method === 'POST') {
             return request

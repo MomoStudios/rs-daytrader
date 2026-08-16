@@ -50,6 +50,7 @@ import {
     type OperatorWorldObservation,
 } from './lib/operatorBrain';
 import { loadOperatorState, resetOperatorWorkflow } from './lib/operatorStore';
+import { acknowledgeOperatorEscalation, checkOperatorEscalationTimeout } from './lib/escalationStore';
 import { listReusableWorkflows } from './lib/workflowStore';
 import { retrieveExecutionKnowledge } from './lib/executionKnowledge';
 import {
@@ -64,6 +65,7 @@ import {
     preparedPlanIsStale,
 } from './lib/runtimeScheduler';
 import { activeDevelopmentKnowledge } from './lib/developmentStore';
+import { listCanaryWorkflowOptions } from './lib/workflowCandidateStore';
 import { updateAssetMemory } from './lib/assetMemory';
 import {
     evaluateGoalCompletion,
@@ -152,6 +154,17 @@ await runScript(async ({ bot, sdk }) => {
         ingestNewChat();
         maybeLogCharacterTrace();
         await clearStaleTradeInterface();
+
+        // Escalations are owned/tracked issues with a deadline; if the
+        // strategist never acknowledges one, it must not block execution
+        // forever. Timing out only clears the flag (the workflow behind it
+        // was already reset when the escalation was raised) and defers the
+        // underlying issue to human review instead of silently forgetting it.
+        const escalationTimeout = checkOperatorEscalationTimeout();
+        if (escalationTimeout.timedOut) {
+            pendingChatForAi = true;
+            lastAiAttemptAt = 0;
+        }
 
         if (!brainAvailable && Date.now() - lastAiAttemptAt >= AI_RETRY_BACKOFF_MS) {
             lastAiAttemptAt = Date.now();
@@ -471,7 +484,13 @@ await runScript(async ({ bot, sdk }) => {
             );
             activeAction = null;
         } else if (plan.strategistChanged) {
+            const hadPendingEscalation = !!loadOperatorState().pendingEscalation;
             resetOperatorWorkflow();
+            if (hadPendingEscalation) {
+                acknowledgeOperatorEscalation(
+                    `strategist replaced the goal without a new operator workflow: ${plan.decision.summary}`
+                );
+            }
         }
     }
 
@@ -729,7 +748,7 @@ await runScript(async ({ bot, sdk }) => {
         const request = operatorRequestFromStrategist(
             decision,
             buildOperatorWorldObservation(),
-            listReusableWorkflows().slice(0, 20)
+            [...listCanaryWorkflowOptions(5), ...listReusableWorkflows()].slice(0, 20)
         );
         request.executionKnowledge = retrieveExecutionKnowledge(decision);
         request.developmentKnowledge = activeDevelopmentKnowledge('operator');

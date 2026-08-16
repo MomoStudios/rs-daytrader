@@ -50,9 +50,9 @@ function parseItemFile(filePath: string, fileBaseName: string): PriceEntry | nul
 
     if (!valueMatch) return null;
 
-    const name = titleMatch ? titleMatch[1].trim() : fileBaseName;
-    const value = parseInt(valueMatch[1], 10);
-    const members = membersMatch ? membersMatch[1].toLowerCase() === 'yes' : false;
+    const name = titleMatch?.[1] ? titleMatch[1].trim() : fileBaseName;
+    const value = parseInt(valueMatch[1] ?? '0', 10);
+    const members = membersMatch ? membersMatch[1]?.toLowerCase() === 'yes' : false;
 
     return {
         name,

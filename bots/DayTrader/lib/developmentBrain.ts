@@ -28,6 +28,10 @@ Your role:
 - publish concise durable knowledge for strategist/operator context;
 - propose reusable declarative operator workflows when current directives can
   express the solution;
+- weigh the trace's systemicIssues (unresolved, deterministically-tracked
+  problems already known to the system) and registryMetrics (resolution
+  time, recurrence, human-intervention load) before repeating a finding
+  that is already tracked - reference it instead of duplicating it;
 - do nothing when execution is healthy and no meaningful improvement exists.
 
 Security and output boundary:
@@ -136,7 +140,8 @@ export class DevelopmentBrain {
                     'Produce the final development review using only the trace and trusted source evidence.',
                     'Return exactly one JSON object with:',
                     '- summary (string), health (healthy|degraded|blocked)',
-                    '- findings[]: severity, kind (failure|upgrade|policy_gap|knowledge_gap|success), title, evidenceRefs, diagnosis, recommendation, target (strategist|operator|workflow|observer)',
+                    '- findings[]: severity, kind (failure|upgrade|policy_gap|knowledge_gap|systemic_code|success), title, evidenceRefs, diagnosis, recommendation, target (strategist|operator|workflow|development|observer)',
+                    '- use systemic_code + development only for recurring defects in this repository, SDK, or agent control plane; use workflow for game execution recipes',
                     '- knowledgeUpdates[]: audience (strategist|operator|both), topic, content, evidenceRefs, confidence 0-100',
                     '- workflowProposals[] using the existing operator workflow schema',
                     '- noActionReason string or null.',

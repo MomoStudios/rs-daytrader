@@ -12,12 +12,12 @@ export interface DevelopmentResearchPlan {
 
 export interface DevelopmentFinding {
     severity: 'low' | 'medium' | 'high';
-    kind: 'failure' | 'upgrade' | 'policy_gap' | 'knowledge_gap' | 'success';
+    kind: 'failure' | 'upgrade' | 'policy_gap' | 'knowledge_gap' | 'systemic_code' | 'success';
     title: string;
     evidenceRefs: string[];
     diagnosis: string;
     recommendation: string;
-    target: 'strategist' | 'operator' | 'workflow' | 'observer';
+    target: 'strategist' | 'operator' | 'workflow' | 'development' | 'observer';
 }
 
 export interface DevelopmentKnowledgeUpdate {
@@ -124,10 +124,10 @@ export function parseDevelopmentReview(value: unknown): DevelopmentReview {
         if (!severity) {
             throw new Error('finding.severity is invalid');
         }
-        if (!['failure', 'upgrade', 'policy_gap', 'knowledge_gap', 'success'].includes(String(finding.kind))) {
+        if (!['failure', 'upgrade', 'policy_gap', 'knowledge_gap', 'systemic_code', 'success'].includes(String(finding.kind))) {
             throw new Error('finding.kind is invalid');
         }
-        if (!['strategist', 'operator', 'workflow', 'observer'].includes(String(finding.target))) {
+        if (!['strategist', 'operator', 'workflow', 'development', 'observer'].includes(String(finding.target))) {
             throw new Error('finding.target is invalid');
         }
         return {

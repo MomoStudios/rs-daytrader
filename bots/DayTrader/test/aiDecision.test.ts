@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { parseAiDecision, parseAiDecisionText } from '../lib/aiDecision';
+import { parseAiDecision, parseAiDecisionText, type AiDecision } from '../lib/aiDecision';
 
-const validDecision = {
+const validDecision: AiDecision = {
     summary: 'Armor demand suggests building smithing capability.',
     marketSignals: [
         {

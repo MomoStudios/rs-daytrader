@@ -2,15 +2,17 @@
   "name": "server",
   "private": true,
   "scripts": {
-    "check": "bun run typecheck && bun run typecheck:webclient && bun run test",
+    "check": "bun run typecheck && bun run typecheck:webclient && bun run typecheck:daytrader && bun run test",
     "docs:api": "bun sdk/generate-api-docs.ts",
     "docs:api:check": "bun sdk/generate-api-docs.ts --check",
     "fetch-collision-data": "bun sdk/fetch-collision-data.ts",
-    "test": "bun test sdk/test server/webclient/src/bot server/webclient/src/util server/webclient/src/lite",
+    "test": "bun test sdk/test server/webclient/src/bot server/webclient/src/util server/webclient/src/lite bots/DayTrader/test",
     "observe:daytrader": "bun bots/DayTrader/observer/server.ts",
     "develop:daytrader": "bun bots/DayTrader/development/runner.ts",
+    "supervise:daytrader": "bun bots/DayTrader/run-supervisor.ts",
     "typecheck": "tsc --noEmit",
-    "typecheck:webclient": "tsc --noEmit -p server/webclient/tsconfig.json"
+    "typecheck:webclient": "tsc --noEmit -p server/webclient/tsconfig.json",
+    "typecheck:daytrader": "tsc --noEmit -p bots/DayTrader/tsconfig.json"
   },
   "devDependencies": {
     "@types/bun": "latest",

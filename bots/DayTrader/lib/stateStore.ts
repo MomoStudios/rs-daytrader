@@ -112,6 +112,7 @@ export function noteTradeChatSeen(): void {
     s.lastTradeChatTime = now;
     for (let i = s.adHistory.length - 1; i >= 0; i--) {
         const ad = s.adHistory[i];
+        if (!ad) continue;
         if (ad.gotResponseWithinMs === null) {
             ad.gotResponseWithinMs = now - ad.sentAt;
         } else {

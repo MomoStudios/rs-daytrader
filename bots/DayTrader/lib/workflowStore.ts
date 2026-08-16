@@ -5,9 +5,24 @@ import { fileURLToPath } from 'url';
 import type { OperatorWorkflow } from './operatorSchema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const WORKFLOWS_PATH = join(DATA_DIR, 'workflows.json');
-const TEMP_PATH = `${WORKFLOWS_PATH}.tmp`;
+let dataDir = join(__dirname, '..', 'data');
+
+function workflowsPath(): string {
+    return join(dataDir, 'workflows.json');
+}
+
+function tempPath(): string {
+    return `${workflowsPath()}.tmp`;
+}
+
+/**
+ * Test-only hook: redirect the on-disk registry to an isolated directory so
+ * candidate-promotion tests never write into the real runtime data folder.
+ * Never called from production code paths.
+ */
+export function _setWorkflowsDataDirForTests(dir: string): void {
+    dataDir = dir;
+}
 
 export interface StoredWorkflow {
     id: string;
@@ -22,9 +37,9 @@ interface WorkflowRegistry {
 }
 
 function loadRegistry(): WorkflowRegistry {
-    if (!existsSync(WORKFLOWS_PATH)) return { workflows: [] };
+    if (!existsSync(workflowsPath())) return { workflows: [] };
     try {
-        return JSON.parse(readFileSync(WORKFLOWS_PATH, 'utf8')) as WorkflowRegistry;
+        return JSON.parse(readFileSync(workflowsPath(), 'utf8')) as WorkflowRegistry;
     } catch (error) {
         console.warn(`[workflowStore] Could not read workflow registry: ${error}`);
         return { workflows: [] };
@@ -32,9 +47,9 @@ function loadRegistry(): WorkflowRegistry {
 }
 
 function persist(registry: WorkflowRegistry): void {
-    mkdirSync(DATA_DIR, { recursive: true });
-    writeFileSync(TEMP_PATH, JSON.stringify(registry, null, 2));
-    renameSync(TEMP_PATH, WORKFLOWS_PATH);
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(tempPath(), JSON.stringify(registry, null, 2));
+    renameSync(tempPath(), workflowsPath());
 }
 
 export function workflowHash(workflow: OperatorWorkflow): string {
@@ -67,4 +82,22 @@ export function storeReusableWorkflow(workflow: OperatorWorkflow): StoredWorkflo
 
 export function listReusableWorkflows(): StoredWorkflow[] {
     return loadRegistry().workflows;
+}
+
+export function getReusableWorkflow(id: string): StoredWorkflow | null {
+    return loadRegistry().workflows.find(item => item.id === id) ?? null;
+}
+
+/**
+ * Removes a previously-promoted workflow from the production registry.
+ * Used when a workflow candidate is rolled back after promotion turns out
+ * to be unsafe or unreliable in later executions.
+ */
+export function removeReusableWorkflow(id: string): boolean {
+    const registry = loadRegistry();
+    const before = registry.workflows.length;
+    registry.workflows = registry.workflows.filter(item => item.id !== id);
+    if (registry.workflows.length === before) return false;
+    persist(registry);
+    return true;
 }

@@ -18,7 +18,7 @@ export interface OperatorBlocker {
 }
 
 export interface OperatorEscalation {
-    reason: 'competition' | 'goal_impractical' | 'missing_capability' | 'unsafe' | 'repeated_failure';
+    reason: 'competition' | 'goal_impractical' | 'missing_capability' | 'unsafe' | 'repeated_failure' | 'policy_violation';
     question: string;
     evidence: string[];
     suggestedOptions: string[];
@@ -110,6 +110,7 @@ const ESCALATION_REASONS = new Set([
     'missing_capability',
     'unsafe',
     'repeated_failure',
+    'policy_violation',
 ]);
 const DIRECTIVE_TYPES = new Set([
     'strategic_action',

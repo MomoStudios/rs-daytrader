@@ -18,11 +18,14 @@ bots/*/
 !bots/DayTrader/
 bots/DayTrader/*
 !bots/DayTrader/daytrader.ts
+!bots/DayTrader/tsconfig.json
 !bots/DayTrader/lab_log.md
 !bots/DayTrader/run-lite-client.sh
 !bots/DayTrader/run-main-loop.sh
 !bots/DayTrader/run-observer.sh
 !bots/DayTrader/run-development-agent.sh
+!bots/DayTrader/run-supervisor.sh
+!bots/DayTrader/run-supervisor.ts
 !bots/DayTrader/bot.env.example
 !bots/DayTrader/lib/
 !bots/DayTrader/lib/**
@@ -32,6 +35,8 @@ bots/DayTrader/*
 !bots/DayTrader/observer/**
 !bots/DayTrader/development/
 !bots/DayTrader/development/**
+!bots/DayTrader/maintenance/
+!bots/DayTrader/maintenance/**
 
 # Daemon type checker temp file
 sdk/__exec_check.ts

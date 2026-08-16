@@ -144,6 +144,7 @@ export async function trySellExcessToShop(ctx: EconomyContext): Promise<string> 
     }
 
     const item = excess[0];
+    if (!item) return 'nothing sellable to offload';
     const result = await bot.sellToShop(item.name, item.count);
     await bot.closeShop();
     log('idle_economy', {

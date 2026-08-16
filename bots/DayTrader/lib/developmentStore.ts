@@ -5,7 +5,10 @@ import type {
     DevelopmentKnowledgeUpdate,
     DevelopmentReview,
 } from './developmentSchema';
-import { storeReusableWorkflow } from './workflowStore';
+import { proposeWorkflowCandidate } from './workflowCandidateStore';
+import { recordIssue } from './issueRegistry';
+import { findingsToIssueInputs } from './developmentIssueBridge';
+import { log } from './logger';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -186,7 +189,21 @@ export function completeDevelopmentWork(input: {
     if (state.knowledge.length > 200) state.knowledge.splice(0, state.knowledge.length - 200);
 
     for (const workflow of input.review.workflowProposals) {
-        storeReusableWorkflow(workflow);
+        // Development review proposals are trusted-deterministic
+        // translations of a tool-free LLM's structured output - they must
+        // never land directly in the reusable production registry. Every
+        // one becomes a workflow candidate that still has to pass static
+        // verification and prove itself in canary executions.
+        proposeWorkflowCandidate({ workflow, source: 'development_review', relatedReviewId: id });
+    }
+
+    const issueIds: string[] = [];
+    for (const issueInput of findingsToIssueInputs(input.review.findings, id)) {
+        const issue = recordIssue(issueInput);
+        issueIds.push(issue.id);
+    }
+    if (issueIds.length > 0) {
+        log('development_issue', { reviewId: id, issueIds, findingCount: input.review.findings.length });
     }
 
     if (input.requestId) {
