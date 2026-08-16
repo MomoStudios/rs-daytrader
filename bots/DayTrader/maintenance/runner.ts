@@ -74,6 +74,9 @@ async function repairIssue(issue: IssueRecord): Promise<void> {
     // is the default fallback, never a reason to leave the issue unowned.
     try {
         const work = await runAutonomousMaintenanceWork(issue);
+        if (work.status === 'canary') {
+            await deployAutonomousMaintenanceWork(work.id);
+        }
         log('note', { msg: 'maintenance worker finished an autonomous repair attempt', issueId: issue.id, status: work.status });
     } catch (error) {
         log('development_error', { stage: 'maintenance_worker_autonomous', issueId: issue.id, error: String(error) });
@@ -134,12 +137,14 @@ async function scanOnce(): Promise<void> {
     //    on a human for a purely technical reason.
     for (const issue of listRetryReadyIssues()) {
         await repairIssue(issue);
+        if (isReloadRequested(startupGeneration)) return;
     }
 
     // 5. Freshly detected/triaged development-owned technical issues
     //    across every eligible category (not just systemic_code).
     for (const issue of eligibleCandidates()) {
         await repairIssue(issue);
+        if (isReloadRequested(startupGeneration)) return;
     }
 }
 
