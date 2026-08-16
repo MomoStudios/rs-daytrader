@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { computeRestartDelayMs, isFastFailure } from '../run-supervisor';
+import { isHeartbeatStale } from '../lib/runtimeHealth';
 
 const spec = {
     name: 'test-child',
@@ -23,6 +24,17 @@ describe('supervisor - fast failure detection', () => {
 describe('supervisor - restart backoff', () => {
     test('the first failure restarts after the base delay', () => {
         expect(computeRestartDelayMs(spec, 1)).toBe(5_000);
+    });
+
+    describe('supervisor - heartbeat liveness', () => {
+        test('marks missing and old heartbeats stale', () => {
+            expect(isHeartbeatStale(null, 10_000, 1_000)).toBe(true);
+            expect(isHeartbeatStale(8_000, 10_000, 1_000)).toBe(true);
+        });
+
+        test('keeps a recent heartbeat healthy', () => {
+            expect(isHeartbeatStale(9_500, 10_000, 1_000)).toBe(false);
+        });
     });
 
     test('backoff doubles with each consecutive fast failure', () => {

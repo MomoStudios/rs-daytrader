@@ -16,8 +16,10 @@
 // the observer, which stays a manually-launched, single-run dashboard
 // process by design) from a single supervised entrypoint.
 
+import { existsSync, readFileSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { isHeartbeatStale } from './lib/runtimeHealth';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -34,6 +36,9 @@ interface ChildSpec {
     maxRestartDelayMs: number;
     /** A run shorter than this counts as a "fast failure" for backoff purposes. */
     fastFailureThresholdMs: number;
+    heartbeatPath?: string;
+    heartbeatStartupGraceMs?: number;
+    maxHeartbeatAgeMs?: number;
 }
 
 /** Pure: was this run short enough to count as a crash-loop failure? */
@@ -71,6 +76,9 @@ const CHILDREN: ChildSpec[] = [
         baseRestartDelayMs: 5_000,
         maxRestartDelayMs: 60_000,
         fastFailureThresholdMs: 10_000,
+        heartbeatPath: join(REPO_ROOT, 'bots', 'DayTrader', 'data', 'main-loop.heartbeat.json'),
+        heartbeatStartupGraceMs: 180_000,
+        maxHeartbeatAgeMs: 5 * 60_000,
     },
     {
         name: 'development-reviewer',
@@ -79,6 +87,9 @@ const CHILDREN: ChildSpec[] = [
         baseRestartDelayMs: 10_000,
         maxRestartDelayMs: 120_000,
         fastFailureThresholdMs: 15_000,
+        heartbeatPath: join(REPO_ROOT, 'bots', 'DayTrader', 'data', 'development-reviewer.heartbeat.json'),
+        heartbeatStartupGraceMs: 180_000,
+        maxHeartbeatAgeMs: 10 * 60_000,
     },
     {
         name: 'maintenance-worker',
@@ -87,6 +98,9 @@ const CHILDREN: ChildSpec[] = [
         baseRestartDelayMs: 15_000,
         maxRestartDelayMs: 120_000,
         fastFailureThresholdMs: 15_000,
+        heartbeatPath: join(REPO_ROOT, 'bots', 'DayTrader', 'data', 'maintenance-worker.heartbeat.json'),
+        heartbeatStartupGraceMs: 60_000,
+        maxHeartbeatAgeMs: 5 * 60_000,
     },
 ];
 
@@ -100,15 +114,18 @@ class SupervisedChild {
     async run(): Promise<void> {
         while (!this.stopping) {
             const startedAt = Date.now();
+            if (this.spec.heartbeatPath) rmSync(this.spec.heartbeatPath, { force: true });
             console.log(`[supervisor] starting ${this.spec.name} at ${new Date(startedAt).toISOString()}`);
-            this.proc = Bun.spawn({
+            const spawned = Bun.spawn({
                 cmd: this.spec.cmd,
                 cwd: this.spec.cwd,
                 stdout: 'inherit',
                 stderr: 'inherit',
                 stdin: 'inherit',
             });
-            const exitCode = await this.proc.exited;
+            this.proc = spawned;
+            void this.watchHeartbeat(spawned, startedAt);
+            const exitCode = await spawned.exited;
             this.proc = null;
             if (this.stopping) break;
 
@@ -124,6 +141,46 @@ class SupervisedChild {
             await Bun.sleep(delay);
         }
         console.log(`[supervisor] ${this.spec.name} stopped`);
+    }
+
+    private async watchHeartbeat(
+        spawned: ReturnType<typeof Bun.spawn>,
+        startedAt: number
+    ): Promise<void> {
+        if (
+            !this.spec.heartbeatPath ||
+            !this.spec.heartbeatStartupGraceMs ||
+            !this.spec.maxHeartbeatAgeMs
+        ) {
+            return;
+        }
+        while (!this.stopping && this.proc === spawned) {
+            await Bun.sleep(15_000);
+            if (this.stopping || this.proc !== spawned) return;
+            const now = Date.now();
+            if (now - startedAt < this.spec.heartbeatStartupGraceMs) continue;
+            let heartbeatAt: number | null = null;
+            if (existsSync(this.spec.heartbeatPath)) {
+                try {
+                    const value = JSON.parse(readFileSync(this.spec.heartbeatPath, 'utf8')) as {
+                        at?: unknown;
+                    };
+                    heartbeatAt = typeof value.at === 'number' ? value.at : null;
+                } catch {
+                    heartbeatAt = null;
+                }
+            }
+            if (!isHeartbeatStale(heartbeatAt, now, this.spec.maxHeartbeatAgeMs)) {
+                continue;
+            }
+            console.error(
+                `[supervisor] ${this.spec.name} heartbeat stale or missing; terminating inert child`
+            );
+            spawned.kill('SIGTERM');
+            await Bun.sleep(5_000);
+            if (this.proc === spawned) spawned.kill('SIGKILL');
+            return;
+        }
     }
 
     stop(signal: NodeJS.Signals): void {

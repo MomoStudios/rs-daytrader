@@ -76,6 +76,7 @@ import {
     inventoryDelta,
     summarizeInventory,
 } from './lib/tradeReconciliation';
+import { recordRuntimeHeartbeat } from './lib/runtimeHealth';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -105,11 +106,13 @@ let activeAction: StrategicAction | null = null;
 let lastCharacterTraceAt = 0;
 let lastCharacterTraceSignature = '';
 
-await runScript(async ({ bot, sdk }) => {
+const runResult = await runScript(async ({ bot, sdk }) => {
     await bot.skipTutorial();
 
     const brain = new DayTraderBrain();
     const operator = new OperatorCoordinator();
+    let unsubscribeChatWatcher: (() => void) | null = null;
+    try {
     let brainAvailable = false;
     let operatorAvailable = false;
     try {
@@ -148,9 +151,10 @@ await runScript(async ({ bot, sdk }) => {
         preparedPlan: null,
     };
 
-    const unsubscribeChatWatcher = sdk.onStateUpdate(() => ingestNewChat());
+    unsubscribeChatWatcher = sdk.onStateUpdate(() => ingestNewChat());
 
     while (true) {
+        recordRuntimeHeartbeat('main-loop', 'loop');
         ingestNewChat();
         maybeLogCharacterTrace();
         await clearStaleTradeInterface();
@@ -192,6 +196,11 @@ await runScript(async ({ bot, sdk }) => {
                         model: operator.getModel(),
                         toolsEnabled: false,
                     });
+
+                    // This file is a supervised executable, not a reusable in-process script.
+                    // If the runner fails outside the callback (for example a disconnect race),
+                    // retained SDK/model handles must not keep an inert process alive.
+                    if (!runResult.success) process.exit(1);
                 } catch (error) {
                     log('ai_error', { stage: 'operator_restart', error: String(error) });
                 }
@@ -1112,5 +1121,10 @@ await runScript(async ({ bot, sdk }) => {
         const netProfitGp = receivedValue - gaveValue;
         if (success) recordTradeOutcome(netProfitGp);
         log('trade_result', { requester, success, message, gave, received, netProfitGp });
+    }
+    } finally {
+        unsubscribeChatWatcher?.();
+        recordRuntimeHeartbeat('main-loop', 'stopping');
+        await Promise.allSettled([brain.stop(), operator.stop()]);
     }
 });

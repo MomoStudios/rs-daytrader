@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { listIssues, type IssueSeverity } from './issueRegistry';
 import { computeRegistryMetrics, type RegistryMetrics } from './registryMetrics';
+import { readRuntimeHeartbeat, type RuntimeHeartbeat } from './runtimeHealth';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -27,6 +28,11 @@ export interface GameTraceSummary {
         state: unknown;
         collection: unknown;
         guidance: unknown;
+        runtimeHealth: {
+            mainLoop: RuntimeHeartbeat | null;
+            developmentReviewer: RuntimeHeartbeat | null;
+            maintenanceWorker: RuntimeHeartbeat | null;
+        };
     };
     counts: Record<string, number>;
     outcomes: {
@@ -232,6 +238,11 @@ export function buildGameTrace(hours = 4, maxEvents = 4_000): GameTraceSummary {
             state: sanitizedPersistentState(),
             collection: readJson('collection.json'),
             guidance: readJson('human-guidance.json'),
+            runtimeHealth: {
+                mainLoop: readRuntimeHeartbeat('main-loop'),
+                developmentReviewer: readRuntimeHeartbeat('development-reviewer'),
+                maintenanceWorker: readRuntimeHeartbeat('maintenance-worker'),
+            },
         },
         counts,
         outcomes: {

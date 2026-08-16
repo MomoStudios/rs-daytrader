@@ -14,6 +14,7 @@ import { listMaintenanceWork } from '../lib/maintenanceStore';
 import { findApprovedRecipeForIssue, getApprovedRecipe } from './workerContract';
 import { promoteMaintenanceWork, runMaintenanceWork } from './isolatedWorkerRunner';
 import { log } from '../lib/logger';
+import { recordRuntimeHeartbeat } from '../lib/runtimeHealth';
 
 const SCAN_INTERVAL_MS = 60_000;
 let stopping = false;
@@ -63,6 +64,7 @@ async function scanOnce(): Promise<void> {
 async function main(): Promise<void> {
     log('note', { msg: 'maintenance worker started', scanIntervalMs: SCAN_INTERVAL_MS });
     while (!stopping) {
+        recordRuntimeHeartbeat('maintenance-worker', 'scan');
         try {
             await scanOnce();
         } catch (error) {

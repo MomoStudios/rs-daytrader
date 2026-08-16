@@ -944,3 +944,31 @@ own TypeScript was outside the repo's typecheck/test gate entirely.
   consistent with the existing JSON-store pattern but means a process that
   never calls `loadOperatorState()` won't see a fresh escalation flag until
   it does.
+
+## Session 16 (alive-but-inert main-loop diagnosis)
+
+### Incident
+- At 08:35 the strategist proposed consuming an Iron bar while account-wide
+  holdings were exactly equal to the ten-bar reservation.
+- The deployed `installPreparedPlan()` correctly rejected the workflow, but
+  did so by throwing. `runScript()` disconnected the bot and returned.
+- The strategist/operator Copilot sessions were not stopped on that exceptional
+  callback exit. Their open handles kept Bun alive, so `run-main-loop.sh`
+  observed a living PID and never restarted it.
+- Main-loop events and character traces stopped immediately. The independent
+  development reviewer continued every 30 minutes and repeatedly diagnosed
+  workflow symptoms, but its trace had no process heartbeat proving that the
+  executor itself had stopped.
+
+### Architectural prevention
+- The DayTrader callback now owns strategist/operator teardown in `finally`, so
+  every exit closes retained model sessions and allows the process supervisor
+  to observe termination.
+- Main loop, development reviewer, and maintenance worker publish atomic
+  runtime heartbeats with PID, phase, and timestamp.
+- The unified supervisor applies process-specific startup grace and heartbeat
+  age budgets. A child that remains alive without advancing is terminated and
+  restarted with the existing bounded backoff.
+- Development traces include all runtime heartbeats, allowing the reviewer to
+  distinguish an execution defect from a dead executor and route future
+  liveness incidents as systemic control-plane failures.

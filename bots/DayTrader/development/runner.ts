@@ -7,6 +7,7 @@ import {
 import { buildGameTrace } from '../lib/gameTrace';
 import { log } from '../lib/logger';
 import { retrieveServerEvidence } from '../lib/serverKnowledge';
+import { recordRuntimeHeartbeat } from '../lib/runtimeHealth';
 
 const brain = new DevelopmentBrain();
 let stopping = false;
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
         intervalMinutes: 30,
     });
     while (!stopping) {
+        recordRuntimeHeartbeat('development-reviewer', 'scan');
         await runReview();
         await Bun.sleep(10_000);
     }
