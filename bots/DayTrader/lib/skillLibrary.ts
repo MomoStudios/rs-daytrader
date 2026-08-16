@@ -2,7 +2,12 @@ import type { BotActions } from '../../../sdk/actions';
 import type { BotSDK } from '../../../sdk/index';
 import type { InventoryItem } from '../../../sdk/types';
 import type { Destination, ProgressionActivity, StrategicAction } from './aiDecision';
-import { doOneGatherStep, doOnePickupStep, trySellExcessToShop } from './economy';
+import {
+    doOneGatherStep,
+    doOnePickupStep,
+    recoverInventoryCapacity,
+    trySellExcessToShop,
+} from './economy';
 import { log } from './logger';
 
 export interface SkillContext {
@@ -94,8 +99,45 @@ async function trainFishing(ctx: SkillContext): Promise<SkillResult> {
 }
 
 async function trainMining(ctx: SkillContext): Promise<SkillResult> {
-    const rock = ctx.sdk.findNearbyLoc(/rocks?/i, { reachable: true, withOption: /^mine$/i });
-    if (!rock || distanceTo(ctx, 'se_varrock_mine') > 25) return travel(ctx, 'se_varrock_mine');
+    const miningPriority = (name: string): number => {
+        if (/runite/i.test(name)) return 7;
+        if (/adamant/i.test(name)) return 6;
+        if (/mithril/i.test(name)) return 5;
+        if (/coal/i.test(name)) return 4;
+        if (/iron/i.test(name)) return 3;
+        if (/tin|copper/i.test(name)) return 2;
+        return 0;
+    };
+    const candidates = (ctx.sdk.getState()?.nearbyLocs ?? [])
+        .filter(location => location.reachable !== false)
+        .filter(location => location.optionsWithIndex.some(option => /^mine$/i.test(option.text)))
+        .filter(location => miningPriority(location.name) > 0)
+        .sort(
+            (a, b) =>
+                miningPriority(b.name) - miningPriority(a.name) ||
+                a.distance - b.distance
+        );
+    let rock = candidates[0];
+    if (!rock && distanceTo(ctx, 'se_varrock_mine') <= 25) {
+        // Depleted rocks temporarily lose their ore-specific Mine target.
+        // Wait for a bounded respawn and re-observe instead of clicking generic
+        // "Rocks", which produces no Mining XP.
+        await ctx.sdk.waitForTicks(10);
+        rock = (ctx.sdk.getState()?.nearbyLocs ?? [])
+            .filter(location => location.reachable !== false)
+            .filter(location =>
+                location.optionsWithIndex.some(option => /^mine$/i.test(option.text))
+            )
+            .filter(location => miningPriority(location.name) > 0)
+            .sort(
+                (a, b) =>
+                    miningPriority(b.name) - miningPriority(a.name) ||
+                    a.distance - b.distance
+            )[0];
+    }
+    if (!rock || distanceTo(ctx, 'se_varrock_mine') > 25) {
+        return travel(ctx, 'se_varrock_mine');
+    }
     const result = await ctx.bot.interactLoc(rock, 'mine');
     return { success: result.success, action: `train:mining:${rock.name}`, message: result.message };
 }
@@ -206,6 +248,16 @@ export async function executeStrategicAction(ctx: SkillContext, action: Strategi
 }
 
 export async function executeFallbackAction(ctx: SkillContext): Promise<SkillResult> {
+    if ((ctx.sdk.getState()?.inventory.length ?? 0) >= 28) {
+        const message = await recoverInventoryCapacity(ctx);
+        const result = {
+            success: !/^(no |inventory full with)/i.test(message),
+            action: 'fallback:capacity_recovery',
+            message,
+        };
+        log('skill_action', { ...result });
+        return result;
+    }
     const message = await doOneGatherStep(ctx);
     const result = { success: !/^no |^inventory full/i.test(message), action: 'fallback:gather', message };
     log('skill_action', { ...result });

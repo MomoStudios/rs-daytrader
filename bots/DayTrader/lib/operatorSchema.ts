@@ -51,6 +51,7 @@ export type OperatorDirective =
           priceGp: number;
       }
     | { type: 'equip_item'; item: string }
+    | { type: 'unequip_item'; item: string }
     | { type: 'set_combat_style'; skill: 'Attack' | 'Strength' | 'Defence' }
     | { type: 'attack_npc'; target: string }
     | { type: 'wait'; ticks: number };
@@ -132,6 +133,7 @@ const DIRECTIVE_TYPES = new Set([
     'smith_product',
     'trade_bundle_sell',
     'equip_item',
+    'unequip_item',
     'set_combat_style',
     'attack_npc',
     'wait',
@@ -298,6 +300,8 @@ function directive(value: unknown): OperatorDirective {
             };
         case 'equip_item':
             return { type: 'equip_item', item: string(data.item, 'directive.item', 80) };
+        case 'unequip_item':
+            return { type: 'unequip_item', item: string(data.item, 'directive.item', 80) };
         case 'set_combat_style':
             if (!['Attack', 'Strength', 'Defence'].includes(String(data.skill))) {
                 throw new Error('directive.skill must be Attack, Strength, or Defence');

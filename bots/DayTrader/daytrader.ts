@@ -70,6 +70,10 @@ import {
     guidanceIdsSatisfiedByGoal,
 } from './lib/goalCompletion';
 import { compileTradeHandoff } from './lib/tradeHandoff';
+import {
+    inventoryDelta,
+    summarizeInventory,
+} from './lib/tradeReconciliation';
 
 const TRADE_SESSION_TIMEOUT_MS = 25_000;
 const REPITCH_COOLDOWN_MS = 2 * 60 * 1000;
@@ -89,6 +93,7 @@ const knownDeals = new Map<string, KnownDeal>();
 const lastPitchAt = new Map<string, number>();
 const recentChat: AiChatObservation[] = [];
 let lastAiAttemptAt = 0;
+let lastOperatorAttemptAt = 0;
 let lastDiscussionAt = 0;
 let pendingChatForAi = false;
 let chatGeneration = 0;
@@ -146,6 +151,7 @@ await runScript(async ({ bot, sdk }) => {
     while (true) {
         ingestNewChat();
         maybeLogCharacterTrace();
+        await clearStaleTradeInterface();
 
         if (!brainAvailable && Date.now() - lastAiAttemptAt >= AI_RETRY_BACKOFF_MS) {
             lastAiAttemptAt = Date.now();
@@ -155,6 +161,27 @@ await runScript(async ({ bot, sdk }) => {
                 log('note', { msg: 'AI strategist recovered', model: brain.getModel(), toolsEnabled: false });
             } catch (error) {
                 log('ai_error', { stage: 'restart', error: String(error) });
+            }
+            if (
+                !operatorAvailable &&
+                Date.now() - lastOperatorAttemptAt >= AI_RETRY_BACKOFF_MS
+            ) {
+                lastOperatorAttemptAt = Date.now();
+                try {
+                    await operator.start();
+                    operatorAvailable = true;
+                    const existingDecision = loadStrategy().lastDecision;
+                    if (existingDecision) {
+                        operator.setPlanningContext(buildOperatorRequest(existingDecision));
+                    }
+                    log('note', {
+                        msg: 'operator AI recovered',
+                        model: operator.getModel(),
+                        toolsEnabled: false,
+                    });
+                } catch (error) {
+                    log('ai_error', { stage: 'operator_restart', error: String(error) });
+                }
             }
         }
 
@@ -362,10 +389,21 @@ await runScript(async ({ bot, sdk }) => {
                     try {
                         operatorRequest = buildOperatorRequest(decision);
                         operatorDecision =
-                            compileTradeHandoff(decision, operatorRequest.assetMemory) ??
+                            compileTradeHandoff(
+                                decision,
+                                operatorRequest.assetMemory,
+                                {
+                                    x: operatorRequest.world.player.position.x,
+                                    z: operatorRequest.world.player.position.z,
+                                }
+                            ) ??
                             (await operator.preparePlan(operatorRequest));
                     } catch (error) {
                         log('ai_error', { stage: 'operator_plan_prepare', error: String(error) });
+                        if (isClosedConnectionError(error)) {
+                            operatorAvailable = false;
+                            await operator.stop();
+                        }
                     }
                 }
                 planningState.preparedPlan = {
@@ -393,8 +431,14 @@ await runScript(async ({ bot, sdk }) => {
                 };
             }
         })()
-            .catch(error => {
+            .catch(async error => {
                 log('ai_error', { stage: 'background_planning', error: String(error) });
+                if (isClosedConnectionError(error)) {
+                    brainAvailable = false;
+                    operatorAvailable = false;
+                    await brain.stop();
+                    await operator.stop();
+                }
             })
             .finally(() => {
                 planningPromise = null;
@@ -439,6 +483,27 @@ await runScript(async ({ bot, sdk }) => {
                 60_000
             )
             .catch(() => undefined);
+    }
+
+    function isClosedConnectionError(error: unknown): boolean {
+        return /connection is closed|session.*closed|not connected/i.test(String(error));
+    }
+
+    async function clearStaleTradeInterface(): Promise<void> {
+        const state = sdk.getState();
+        if (!state) return;
+        const tradeInterface =
+            state.interface.isOpen &&
+            (state.interface.interfaceId === 3323 ||
+                state.interface.interfaceId === 3443);
+        if (!tradeInterface || state.trade?.isOpen) return;
+        const cleared = await bot.declineTrade();
+        log('note', {
+            msg: 'cleared stale trade interface',
+            interfaceId: state.interface.interfaceId,
+            success: cleared.success,
+            message: cleared.message,
+        });
     }
 
     function recordCurrentGoalCompletionIfSatisfied(): void {
@@ -678,6 +743,9 @@ await runScript(async ({ bot, sdk }) => {
     function maybeLogCharacterTrace(): void {
         const state = sdk.getState();
         if (!state?.player) return;
+        if (!state.inGame || (state.player.worldX === 0 && state.player.worldZ === 0)) {
+            return;
+        }
         const combatTarget =
             state.player.combat.inCombat && state.player.combat.targetType === 'npc'
                 ? state.nearbyNpcs.find(npc => npc.index === state.player?.combat.targetIndex)?.name ?? null
@@ -721,6 +789,14 @@ await runScript(async ({ bot, sdk }) => {
                 style: state.combatStyle?.styles.find(
                     style => style.index === state.combatStyle?.currentStyle
                 )?.name,
+            },
+            ui: {
+                dialogOpen: state.dialog.isOpen,
+                interfaceOpen: state.interface.isOpen,
+                interfaceId: state.interface.interfaceId,
+                modalOpen: state.modalOpen,
+                modalInterface: state.modalInterface,
+                tradeOpen: state.trade?.isOpen ?? false,
             },
         });
     }
@@ -927,6 +1003,7 @@ await runScript(async ({ bot, sdk }) => {
     }
 
     async function handleUnsolicitedTrade(requester: string): Promise<void> {
+        const inventoryBefore = summarizeInventory(sdk.getInventory());
         const opened = await bot.tradeWith(requester, TRADE_SESSION_TIMEOUT_MS);
         if (!opened.success) {
             log('trade_result', { requester, success: false, message: opened.message });
@@ -980,8 +1057,29 @@ await runScript(async ({ bot, sdk }) => {
             });
             return;
         }
-        log('trade_result', { requester, success: true, message: 'Trade session ended' });
+        await sdk.waitForStateChange(2_000).catch(() => undefined);
+        const inventoryAfter = summarizeInventory(sdk.getInventory());
+        const { gave, received } = inventoryDelta(inventoryBefore, inventoryAfter);
+        if (gave.length === 0 && received.length === 0) {
+            log('trade_result', {
+                requester,
+                success: false,
+                message: 'Trade session ended without an observable inventory exchange',
+                gave,
+                received,
+                netProfitGp: 0,
+            });
+            return;
+        }
+        finishTrade(
+            requester,
+            gave,
+            received,
+            true,
+            'Trade completed with observed inventory exchange'
+        );
     }
+
 
     function finishTrade(
         requester: string,

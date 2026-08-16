@@ -665,3 +665,57 @@ The main controller continues under `run-main-loop.sh`.
   and re-banked the reserved bundle instead of repeating blindly.
 - Terra published replacement managed knowledge confirming player trading is
   now supported through `tradeOrders` and `trade_bundle_sell`.
+
+## Session 14 (layered persistent-idle audit)
+
+### Observed failure
+- DayTrader remained near Lumbridge with a full 28-slot inventory.
+- No operator workflow was active; fallback repeatedly called gather, which
+  deterministically returned `inventory full, skipping gather` thousands of
+  times.
+- Strategist and operator Copilot sessions had closed, but runtime booleans
+  still marked them available, causing repeated background-planning failures.
+- Historical trace state conflated a stale trade interface ID with a furnace
+  dialog because interface identity was missing from snapshots.
+
+### Layer ownership and fixes
+
+#### Development layer
+- Correctly identified the capacity loop, stale UI reports, planner transport
+  failures, generic mining targets, and provisional trade-result telemetry.
+- Source retrieval now strips model-added quote wrappers from literal search
+  queries.
+- Character traces include interface ID, modal ID, dialog state, and live trade
+  state so future reviews can identify UI ownership precisely.
+
+#### Strategist layer
+- Prompt policy now gates gathering/mining/fishing goals on free inventory or
+  completed banking.
+- Closed Copilot connections mark strategist/operator unavailable, stop the
+  stale sessions, and are recreated with bounded retry delays.
+
+#### Operator layer
+- Full-inventory trade staging walks to the nearest validated bank, deposits
+  non-bundle non-tool inventory to free slots, supports unequipping authorized
+  equipment, then stages and trades.
+- Schema temporarily permits one trade order only, avoiding silently discarded
+  secondary orders.
+- Named ore targets and respawn pacing replace generic `Rocks` interactions.
+
+#### Executor/game loop
+- Fallback detects 28 occupied slots and runs deterministic capacity recovery:
+  walk to nearest bank, open it, deposit a non-essential stack, and close.
+- Bob/open-shop discovery recognizes Bob and generic NPCs with a Trade option.
+- Stale trade-main/confirm interfaces are declined only when no live trade
+  session exists.
+- Unsolicited trades count as completed only after observable inventory deltas;
+  a closed session without exchange no longer records success/profit.
+- Invalid all-zero snapshots are ignored by traces and asset memory.
+
+### Live verification
+- After reset, capacity recovery banked the carried ore and reduced inventory
+  from 28 to 3 slots.
+- Planner sessions restarted without new `Connection is closed` errors.
+- Character moved from Lumbridge/Draynor to SE Varrock.
+- Mining advanced from 78 to 79 and continued toward 80 with an active workflow,
+  no failure, and no escalation.

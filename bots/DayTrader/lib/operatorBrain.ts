@@ -116,6 +116,8 @@ ROLE:
 - materialReservations are hard account-wide floors for persistent production
   commitments. Do not consume a reserved item for another workflow if doing so
   would reduce combined holdings below the reserved count.
+- Never execute gathering with a full 28-slot inventory. Bank non-tool carried
+  resources first, preserving account-wide reservations, then resume.
 - tradeOrders are strategist-authorized typed player deals. Stage the exact
   items from inventory/bank, then use trade_bundle_sell. Do not invent players,
   items, or prices outside these orders.
@@ -144,7 +146,7 @@ ALLOWED DIRECTIVES:
 - bank_open; bank_close; bank_deposit/bank_withdraw {item,amount}
 - shop_open {npc}; shop_close; shop_buy {item,amount}
 - smith_product {product,bar} (uses the SDK smithing product selector)
-- equip_item {item}; set_combat_style {skill: Attack|Strength|Defence}
+- equip_item {item}; unequip_item {item}; set_combat_style {skill: Attack|Strength|Defence}
 - attack_npc {target}; wait {ticks 1-20}
 - trade_bundle_sell {recipient,items:[{item,amount}],priceGp}; deterministic
   policy verifies ownership, value, blacklist, and both atomic trade screens.

@@ -213,8 +213,8 @@ export function parseAiDecision(value: unknown): AiDecision {
     if (!Array.isArray(value.reservations) || value.reservations.length > 10) {
         throw new Error('reservations must contain at most 10 entries');
     }
-    if (!Array.isArray(value.tradeOrders) || value.tradeOrders.length > 3) {
-        throw new Error('tradeOrders must contain at most 3 entries');
+    if (!Array.isArray(value.tradeOrders) || value.tradeOrders.length > 1) {
+        throw new Error('tradeOrders must contain at most 1 entry');
     }
     if (!Array.isArray(value.chatActions)) throw new Error('chatActions must be an array');
     if (value.chatActions.length > 3) throw new Error('chatActions may contain at most 3 entries');

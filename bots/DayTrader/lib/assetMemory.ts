@@ -66,6 +66,13 @@ function persist(value: AssetMemory): void {
 
 export function updateAssetMemory(state: BotWorldState): AssetMemory {
     const value = load();
+    if (
+        !state.inGame ||
+        !state.player ||
+        (state.player.worldX === 0 && state.player.worldZ === 0)
+    ) {
+        return value;
+    }
     const now = Date.now();
     value.inventory = state.inventory.map(item => ({ name: item.name, count: item.count }));
     value.equipment = state.equipment.map(item => ({ name: item.name, count: item.count }));

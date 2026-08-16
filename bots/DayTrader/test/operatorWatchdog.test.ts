@@ -10,7 +10,10 @@ const base: ProgressSnapshot = {
     inventory: {},
     dialogOpen: false,
     interfaceOpen: false,
+    interfaceId: -1,
     modalOpen: false,
+    modalInterface: -1,
+    tradeOpen: false,
     nearbyPlayerCount: 0,
 };
 

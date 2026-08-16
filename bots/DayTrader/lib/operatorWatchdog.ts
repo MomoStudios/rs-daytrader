@@ -10,7 +10,10 @@ export interface ProgressSnapshot {
     inventory: Record<string, number>;
     dialogOpen: boolean;
     interfaceOpen: boolean;
+    interfaceId: number;
     modalOpen: boolean;
+    modalInterface: number;
+    tradeOpen: boolean;
     nearbyPlayerCount: number;
 }
 
@@ -41,7 +44,10 @@ export function snapshotProgress(state: BotWorldState | null, at = Date.now()): 
         inventory,
         dialogOpen: state?.dialog.isOpen ?? false,
         interfaceOpen: state?.interface.isOpen ?? false,
+        interfaceId: state?.interface.interfaceId ?? -1,
         modalOpen: state?.modalOpen ?? false,
+        modalInterface: state?.modalInterface ?? -1,
+        tradeOpen: state?.trade?.isOpen ?? false,
         nearbyPlayerCount: state?.nearbyPlayers.length ?? 0,
     };
 }

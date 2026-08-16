@@ -20,7 +20,11 @@ export interface ServerEvidence {
 }
 
 function safeQuery(value: string): string {
-    return value.replace(/\s+/g, ' ').trim().slice(0, 160);
+    return value
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .slice(0, 160);
 }
 
 export async function retrieveServerEvidence(

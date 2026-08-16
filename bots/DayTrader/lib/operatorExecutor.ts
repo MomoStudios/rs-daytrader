@@ -210,6 +210,10 @@ export async function executeOperatorDirective(
             const action = await bot.equipItem(exactPattern(directive.item));
             return result('operator:equip_item', action.success, action.message);
         }
+        case 'unequip_item': {
+            const action = await bot.unequipItem(exactPattern(directive.item));
+            return result('operator:unequip_item', action.success, action.message);
+        }
         case 'set_combat_style': {
             const style = sdk
                 .getState()

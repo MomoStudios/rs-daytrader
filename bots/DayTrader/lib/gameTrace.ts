@@ -114,7 +114,7 @@ function conciseEvent(event: TraceEvent): TraceEvent {
         trade_result: ['requester', 'success', 'message', 'gave', 'received', 'netProfitGp'],
         trade_decision: ['sender', 'requester', 'accept', 'reason', 'myOfferValue', 'theirOfferValue'],
         skill_action: ['action', 'activity', 'success', 'message', 'item'],
-        character_trace: ['player', 'skills', 'inventory', 'equipment', 'combat'],
+        character_trace: ['player', 'skills', 'inventory', 'equipment', 'combat', 'ui'],
         ai_error: ['stage', 'error'],
         error: ['stage', 'error'],
         ad_sent: ['message', 'style'],

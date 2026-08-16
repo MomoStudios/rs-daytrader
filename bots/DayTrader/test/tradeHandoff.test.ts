@@ -41,8 +41,9 @@ describe('deterministic trade handoff compiler', () => {
                 { name: 'Iron platebody', count: 1 },
                 { name: 'Iron platelegs', count: 1 },
             ],
-        });
+        }, { x: 3285, z: 3365 });
         expect(compiled?.workflow?.steps.map(step => step.directive.type)).toEqual([
+            'walk_to',
             'bank_open',
             'bank_withdraw',
             'bank_close',
@@ -83,5 +84,42 @@ describe('deterministic trade handoff compiler', () => {
                 combinedHoldings: [],
             })
         ).toBeNull();
+    });
+
+    test('frees inventory space and unequips authorized equipment', () => {
+        const equippedDecision: AiDecision = {
+            ...decision,
+            tradeOrders: [
+                {
+                    kind: 'sell_bundle',
+                    recipient: 'Henryatkins',
+                    items: [{ item: 'Iron platebody', amount: 1 }],
+                    priceGp: 700,
+                    rationale: 'Authorized equipped-item sale.',
+                },
+            ],
+        };
+        const filler = Array.from({ length: 28 }, (_, index) => ({
+            name: `Ore ${index}`,
+            count: 1,
+        }));
+        const compiled = compileTradeHandoff(
+            equippedDecision,
+            {
+                inventory: filler,
+                equipment: [{ name: 'Iron platebody', count: 1 }],
+                bank: [],
+                inventoryObservedAt: 1,
+                bankObservedAt: null,
+                bankObservationSource: 'never_observed',
+                combinedHoldings: [
+                    ...filler,
+                    { name: 'Iron platebody', count: 1 },
+                ],
+            },
+            { x: 3211, z: 3244 }
+        );
+        expect(compiled?.workflow?.steps.some(step => step.directive.type === 'unequip_item')).toBe(true);
+        expect(compiled?.workflow?.steps.some(step => step.directive.type === 'bank_deposit')).toBe(true);
     });
 });

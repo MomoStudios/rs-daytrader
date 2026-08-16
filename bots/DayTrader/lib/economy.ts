@@ -126,11 +126,22 @@ export async function trySellExcessToShop(ctx: EconomyContext): Promise<string> 
     );
     if (excess.length === 0) return 'nothing sellable to offload';
 
-    const shopkeeper = sdk.findNearbyNpc(/shop\s*keeper|shop\s*assistant/i, { reachable: true });
-    if (!shopkeeper) return 'no shop nearby to sell at';
+    if (!state.shop.isOpen) {
+        const shopkeeper =
+            sdk.findNearbyNpc(/shop\s*keeper|shop\s*assistant|^bob$/i, {
+                reachable: true,
+            }) ??
+            state.nearbyNpcs
+                .filter(npc => npc.reachable !== false)
+                .filter(npc =>
+                    npc.optionsWithIndex.some(option => /^trade$/i.test(option.text))
+                )
+                .sort((a, b) => a.distance - b.distance)[0];
+        if (!shopkeeper) return 'no shop nearby to sell at';
 
-    const opened = await bot.openShop(shopkeeper);
-    if (!opened.success) return `could not open shop: ${opened.message}`;
+        const opened = await bot.openShop(shopkeeper);
+        if (!opened.success) return `could not open shop: ${opened.message}`;
+    }
 
     const item = excess[0];
     const result = await bot.sellToShop(item.name, item.count);
@@ -143,4 +154,62 @@ export async function trySellExcessToShop(ctx: EconomyContext): Promise<string> 
         message: (result as { message?: string }).message,
     });
     return `sellToShop ${item.name} x${item.count}: ${result.success}`;
+}
+
+const BANK_LOCATIONS = [
+    { name: 'Draynor Bank', x: 3092, z: 3243 },
+    { name: 'Varrock West Bank', x: 3185, z: 3436 },
+] as const;
+
+/**
+ * Deterministic capacity recovery used when no operator workflow is available.
+ * Bank resources rather than repeatedly calling a gather action that cannot
+ * succeed. Essential tools remain carried.
+ */
+export async function recoverInventoryCapacity(ctx: EconomyContext): Promise<string> {
+    const { bot, sdk } = ctx;
+    const state = sdk.getState();
+    if (!state?.player) return 'no state available';
+    if (state.inventory.length < 28) return 'inventory already has free space';
+
+    if (state.bank.isOpen) {
+        const candidate = state.inventory.find(
+            item => !ESSENTIAL_TOOL_PATTERN.test(item.name)
+        );
+        if (!candidate) return 'inventory full with only protected tools';
+        const deposited = await bot.depositItem(candidate.name, -1);
+        if (deposited.success) await bot.closeBank();
+        log('idle_economy', {
+            activity: 'bank_capacity_recovery',
+            item: candidate.name,
+            success: deposited.success,
+            message: deposited.message,
+        });
+        return deposited.message;
+    }
+    if (state.interface.isOpen || state.dialog.isOpen || state.modalOpen) {
+        return `blocking interface ${state.interface.interfaceId} prevents capacity recovery`;
+    }
+
+    const bankTarget =
+        sdk.findNearbyLoc(/bank booth|bank chest/i, { reachable: true }) ??
+        sdk.findNearbyNpc(/banker/i, { reachable: true });
+    if (bankTarget) {
+        const opened = await bot.openBank();
+        return opened.message;
+    }
+
+    const nearest = [...BANK_LOCATIONS].sort(
+        (a, b) =>
+            Math.hypot(state.player!.worldX - a.x, state.player!.worldZ - a.z) -
+            Math.hypot(state.player!.worldX - b.x, state.player!.worldZ - b.z)
+    )[0]!;
+    const walked = await bot.walkTo(nearest.x, nearest.z, 4);
+    log('idle_economy', {
+        activity: 'walk_to_bank_for_capacity',
+        bank: nearest.name,
+        success: walked.success,
+        message: walked.message,
+    });
+    return walked.message;
 }

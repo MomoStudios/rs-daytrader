@@ -87,6 +87,9 @@ SECURITY BOUNDARY:
 - currentStrategy.completedGoals is authoritative. Never choose a goal whose
   target and threshold are already satisfied in completedGoals or assetMemory.
   Advance to the next unmet milestone instead.
+- Gathering/mining/fishing goals require inventory capacity. If inventory has
+  28 occupied slots, make banking/capacity recovery the immediate prerequisite
+  instead of selecting another gather action.
 
 BEHAVIOR:
 - Notice direct mentions of "DayTrader" even without trade keywords and answer
@@ -222,6 +225,8 @@ Use tradeOrders only for concrete player deals where the recipient and exact
 items are known. The operator may stage banked items and invoke the deterministic
 atomic trade subsystem. Proposed prices are floors only: policy raises unsafe
 prices to the minimum profitable amount and rechecks both trade screens.
+Return at most one tradeOrder per decision; later deals are reconsidered after
+the current order completes or is deferred.
 targetValue is the actual numeric completion target: desired skill level for a
 leveling goal, desired item count for item acquisition, or desired gp for wealth.
 `;
