@@ -44,6 +44,8 @@ export interface SandboxMounts {
     toolNodeModulesRealPath: string;
     /** Real host path of the current Bun executable, mounted read-only at `/bun`. */
     bunExecutableRealPath: string;
+    /** Additional dependency trees mounted read-only at matching workspace paths. */
+    additionalReadOnlyMounts?: Array<{ realPath: string; sandboxPath: string }>;
 }
 
 function toPosix(path: string): string {
@@ -90,26 +92,43 @@ export function translateArgvForSandbox(argv: string[], mounts: SandboxMounts): 
 export function buildBwrapArgv(mounts: SandboxMounts, innerArgv: string[], bwrapPath: string = DEFAULT_BWRAP_PATH): string[] {
     return [
         bwrapPath,
+        '--unshare-user',
+        '--uid', '0',
+        '--gid', '0',
         '--unshare-all',
         '--unshare-net',
+        '--cap-add', 'CAP_NET_ADMIN',
         '--die-with-parent',
         '--ro-bind', '/usr', '/usr',
         '--symlink', 'usr/bin', '/bin',
         '--symlink', 'usr/lib', '/lib',
         '--symlink', 'usr/lib64', '/lib64',
         '--symlink', 'usr/sbin', '/sbin',
+        '--dir', '/etc',
+        '--ro-bind', '/etc/hosts', '/etc/hosts',
+        '--ro-bind', '/etc/nsswitch.conf', '/etc/nsswitch.conf',
         '--proc', '/proc',
         '--dev', '/dev',
         '--tmpfs', '/tmp',
         '--bind', mounts.workspaceRealPath, '/workspace',
         '--ro-bind', mounts.toolNodeModulesRealPath, '/workspace/node_modules',
+        ...(mounts.additionalReadOnlyMounts ?? []).flatMap(mount => [
+            '--ro-bind',
+            mount.realPath,
+            mount.sandboxPath,
+        ]),
         '--ro-bind', mounts.bunExecutableRealPath, '/bun',
         '--clearenv',
         '--setenv', 'HOME', '/tmp',
         '--setenv', 'PATH', '/usr/bin:/bin',
         '--setenv', 'TMPDIR', '/tmp',
+        '--setenv', 'DAYTRADER_BWRAP_NESTED', '1',
         '--chdir', '/workspace',
         '--',
+        '/bin/sh',
+        '-c',
+        '/usr/bin/ip link set lo up && exec "$@"',
+        'sandbox-gate',
         ...translateArgvForSandbox(innerArgv, mounts),
     ];
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
     _setPinnedGateStepsForTests,
@@ -129,6 +129,13 @@ describe('resolvePinnedGateSteps and the test-only override hook', () => {
 });
 
 describe('runPinnedGate', () => {
+    test('prepares the ignored DayTrader test-data directory in a fresh worktree', async () => {
+        const cwd = join(scratchDir, 'fresh-worktree');
+        mkdirSync(cwd, { recursive: true });
+        const result = await runPinnedGate(fakeSpawn(new Set()), [], cwd, {}, 1000);
+        expect(result.success).toBe(true);
+        expect(existsSync(join(cwd, 'bots', 'DayTrader', 'data'))).toBe(true);
+    });
     function fakeSpawn(succeedOnLabelIndexes: Set<number>) {
         let callIndex = -1;
         return async (argv: string[]) => {

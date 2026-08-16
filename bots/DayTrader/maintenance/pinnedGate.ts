@@ -49,7 +49,7 @@
 // (see autonomousWorkerRunner.ts) since the gate itself had read-write
 // access to the worktree while it ran.
 
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
 export interface PinnedGateStep {
@@ -152,6 +152,13 @@ export async function runPinnedGate(
     envVars: Record<string, string>,
     timeoutMsPerStep: number
 ): Promise<GateRunResult> {
+    // DayTrader tests allocate isolated SQLite/JSON fixtures beneath this
+    // ignored runtime directory. A fresh git worktree does not contain empty
+    // ignored directories, so prepare the mount point deterministically
+    // before entering the sandbox.
+    if (existsSync(cwd)) {
+        mkdirSync(join(cwd, 'bots', 'DayTrader', 'data'), { recursive: true });
+    }
     let stdout = '';
     let stderr = '';
     for (const step of steps) {

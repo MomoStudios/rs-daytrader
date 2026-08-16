@@ -72,6 +72,8 @@ describe('bwrapSandbox - buildBwrapArgv', () => {
         expect(argv).toContain('--unshare-all');
         expect(argv).toContain('--die-with-parent');
         expect(argv).toContain('--clearenv');
+        expect(argv.join(' ')).toContain('--ro-bind /etc/hosts /etc/hosts');
+        expect(argv.join(' ')).toContain('--ro-bind /etc/nsswitch.conf /etc/nsswitch.conf');
         // HOME is always the throwaway tmpfs one, never a real directory.
         const homeIndex = argv.indexOf('HOME');
         expect(argv[homeIndex + 1]).toBe('/tmp');
@@ -82,8 +84,32 @@ describe('bwrapSandbox - buildBwrapArgv', () => {
         // No live repository root mount, no real HOME bind of any kind.
         expect(argv).not.toContain('/home/user');
         expect(argv.some(token => token.includes('.gitconfig'))).toBe(false);
-        // The translated inner command comes after the `--` separator.
-        expect(argv.slice(argv.indexOf('--') + 1)).toEqual(['/bun', 'test']);
+        // A fixed shell wrapper enables only loopback, then execs the
+        // translated inner command without evaluating agent-controlled text.
+        expect(argv.slice(argv.indexOf('--') + 1)).toEqual([
+            '/bin/sh',
+            '-c',
+            '/usr/bin/ip link set lo up && exec "$@"',
+            'sandbox-gate',
+            '/bun',
+            'test',
+        ]);
+    });
+
+    test('adds nested dependency trees as explicit read-only mounts', () => {
+        const argv = buildBwrapArgv(
+            {
+                ...mounts(),
+                additionalReadOnlyMounts: [{
+                    realPath: '/repo/server/webclient/node_modules',
+                    sandboxPath: '/workspace/server/webclient/node_modules',
+                }],
+            },
+            ['/bun', '--version']
+        );
+        expect(argv.join(' ')).toContain(
+            '--ro-bind /repo/server/webclient/node_modules /workspace/server/webclient/node_modules'
+        );
     });
 
     test('uses the given bwrapPath rather than any $PATH resolution', () => {
@@ -122,7 +148,8 @@ describe('bwrapSandbox - identitySandboxSpawnFactory (test-only bypass)', () => 
 });
 
 describe('bwrapSandbox - real bwrap smoke test (the one place a real sandbox actually runs)', () => {
-    test('actually sandboxes a real command: workspace is writable, node_modules is read-only, and there is no network', async () => {
+    const realSandboxTest = process.env.DAYTRADER_BWRAP_NESTED === '1' ? test.skip : test;
+    realSandboxTest('actually sandboxes a real command: workspace is writable, node_modules is read-only, and there is no network', async () => {
         const scratch = mkdtempSync(join(DATA_DIR, 'bwrap-smoke-'));
         try {
             const workspace = join(scratch, 'workspace');

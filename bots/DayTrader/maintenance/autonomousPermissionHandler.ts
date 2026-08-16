@@ -94,8 +94,12 @@ export function evaluatePathAccess(worktreeRoot: string, requestedPath: string):
     let canonicalTarget: string;
     try {
         canonicalRoot = canonicalize(worktreeRoot);
+        const rootAlreadyUsesWorkspaceNamespace =
+            canonicalRoot === '/workspace' || canonicalRoot.startsWith('/workspace/');
         const workspaceRelative =
-            requestedPath === '/workspace'
+            rootAlreadyUsesWorkspaceNamespace
+                ? null
+                : requestedPath === '/workspace'
                 ? ''
                 : requestedPath.startsWith('/workspace/')
                   ? requestedPath.slice('/workspace/'.length)

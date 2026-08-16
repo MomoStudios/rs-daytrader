@@ -335,6 +335,12 @@ async function verifyRevisionInDisposableWorktree(
             workspaceRealPath: worktreePath,
             toolNodeModulesRealPath: join(repoRoot, 'node_modules'),
             bunExecutableRealPath: process.execPath,
+            additionalReadOnlyMounts: [
+                {
+                    realPath: join(repoRoot, 'server', 'webclient', 'node_modules'),
+                    sandboxPath: '/workspace/server/webclient/node_modules',
+                },
+            ],
         });
         return await runPinnedGate(sandboxedSpawn, steps, worktreePath, envVars, timeoutMsPerStep);
     } finally {

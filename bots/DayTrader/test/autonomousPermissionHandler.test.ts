@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { PermissionRequest } from '@github/copilot-sdk';
 import {
     canonicalize,
@@ -12,7 +13,7 @@ import {
 
 // Deliberately *not* bots/DayTrader/data - that path is itself one of the
 // blocked patterns under test, so worktree fixtures must live elsewhere.
-const SCRATCH_DIR = join(import.meta.dir, '..', '.permission-test-scratch');
+const SCRATCH_DIR = join(tmpdir(), 'daytrader-permission-test-scratch');
 let worktree: string;
 let outsideDir: string;
 

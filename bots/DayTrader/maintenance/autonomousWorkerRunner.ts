@@ -264,6 +264,12 @@ async function runFullGate(
         workspaceRealPath: workingRoot,
         toolNodeModulesRealPath: join(toolRoot, 'node_modules'),
         bunExecutableRealPath: process.execPath,
+        additionalReadOnlyMounts: [
+            {
+                realPath: join(toolRoot, 'server', 'webclient', 'node_modules'),
+                sandboxPath: '/workspace/server/webclient/node_modules',
+            },
+        ],
     });
     return runPinnedGate(sandboxedSpawn, steps, workingRoot, env, timeoutMsPerStep);
 }
